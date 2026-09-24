@@ -193,7 +193,8 @@ def liquidar_una(a, cat):
         gana = valor >= t if d == "ge" else valor <= t
     if gana is None:
         return None
-    return {"gana": bool(gana), "unidades": round(a["cuota"] - 1 if gana else -1.0, 3),
+    cuota = a.get("cuota_rb") or a["cuota"]  # la cuota estimada en tu casa, si la hay
+    return {"gana": bool(gana), "unidades": round(cuota - 1 if gana else -1.0, 3), "cuota": cuota,
             "valor": valor, "detalle": detalle}
 
 

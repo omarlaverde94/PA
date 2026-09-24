@@ -182,5 +182,10 @@ class Registro:
         reg = {"evento": "cierra", "clave": clave, "id": a["id"], "fin": ahora_iso(fin),
                "duracion_seg": round(dur), "motivo": motivo, "cuota_final": cuota_final,
                "alcanzable": dur >= C.ALCANZABLE_SEG}
+        # Lo que cambió mientras estuvo abierta (aviso enviado, cuota estimada, etc.)
+        for campo in ("avisado", "avisado_ts", "avisable", "avisable_desde", "cuota_max", "cuota_rb",
+                      "rango_rb", "justa_rb", "ventaja_rb", "en_rango"):
+            if campo in a:
+                reg[campo] = a[campo]
         self.alertas_f.agregar(reg)
         return reg

@@ -117,6 +117,17 @@ with contextlib.redirect_stdout(salida):
     res = INF.resumen_diario(ag.reg, A.col().date())
     assert "Cada posible error del día" in res and "y 5 más" in res and "sin aviso" in res
     ag.reg.alertas_abiertas.clear()
+    # Solo se envían ALERTAS de las señales que lo merecen (estimada 1.50-2.00 y sobre el justo)
+    info = {"deporte": "nfl", "nombre": "Equipo A - Equipo B", "liga": "Liga", "inicio": "2099-01-01T00:00:00Z"}
+    base = {"clave": "mercado:1", "k": 1, "apuesta": "Más de 45.5", "cuota": 1.95, "justa": 1.75, "regla": "mercado",
+            "tipo": "mercado", "respaldo": "r", "explicacion": "e", "confianza": "media", "detectado": ahora,
+            "casa": "Casa de prueba", "cuota_rb": 1.93, "rango_rb": [1.91, 1.94], "justa_rb": 1.75, "ventaja_rb": 0.103}
+    antes = len(enviados)
+    ag.avisar(info, [dict(base, avisable=False, clave="mercado:9")])
+    assert len(enviados) == antes, "se envió una alerta que no la merecía"
+    ag.avisar(info, [dict(base, avisable=True)])
+    assert len(enviados) == antes + 1 and "Cuota estimada en Casa de prueba: 1.93" in enviados[-1][1]
+print("Solo alertas con cuota estimada en 1.50-2.00 y sobre el justo: OK")
 print("Resumen y \"detalle\" listan los errores (15 más fuertes y cuántos faltan): OK")
 
 destinos = {c for c, _ in enviados}

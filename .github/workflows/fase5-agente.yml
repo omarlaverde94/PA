@@ -7,6 +7,8 @@
 #   envían cada 30 min a la rama "datos-fase5" del repositorio de datos privado
 #   (secreto DATA_REPO), con el token del secreto PRIVATE_REPO_TOKEN. Si un
 #   envío falla, el agente avisa por Telegram y reintenta cada 5 min.
+# - La tabla para estimar la cuota de tu casa se lee del repositorio privado
+#   (data/fase5/ajuste_cuotas.json.gz en main); sin ella no se envían alertas.
 # - Después de 7 días desde la primera corrida, el agente no hace nada más.
 #
 # Seguridad:
@@ -77,6 +79,8 @@ jobs:
         run: |
           git config user.name "agente-fase5"
           git config user.email "agente-fase5@users.noreply.github.com"
+          # Tabla para estimar la cuota de tu casa (vive solo en el repositorio privado, rama main).
+          cp data/fase5/ajuste_cuotas.json.gz "$RUNNER_TEMP/ajuste_cuotas.json.gz" 2>/dev/null || true
           if git fetch --quiet --depth 1 origin datos-fase5 >/dev/null 2>&1; then
             git checkout --quiet -B datos-fase5 FETCH_HEAD
           else
@@ -94,4 +98,5 @@ jobs:
           F5_GIT_CADA: "1800"
           F5_DURACION: "20700"
           F5_SIN_SALUDO: "1"
+          F5_AJUSTE: ${{ runner.temp }}/ajuste_cuotas.json.gz
         run: python codigo/scripts/f5_agente.py

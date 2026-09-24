@@ -111,7 +111,7 @@ def internos(filas, ev):
                     f"Las {len(fs)} opciones del mismo mercado suman {suma:.1%}: apostando a todas se ganaría siempre.",
                     "Kambi paga tanto por todas las opciones de este mercado que juntas suman menos de 100%. "
                     "Eso no puede pasar a propósito: una de las cuotas está mal, probablemente la que cambió última.",
-                    "alta"))
+                    "alta", {"ks_otros": [x["k"] for x in fs if x is not sospechosa]}))
 
     grupos = defaultdict(list)
     for f, g, d, t in props:
@@ -168,7 +168,7 @@ def internos(filas, ev):
                         f"Kambi paga más por \"{_dir_txt(d, t_facil)}\" que por \"{_dir_txt(d, t_dif)}\", "
                         f"que es más difícil de cumplir. Eso es imposible si los precios estuvieran bien: "
                         f"el precio justo tiene que ser menor a {dificil['odds']:.2f}.",
-                        "alta", {"cota": True}))
+                        "alta", {"cota": True, "k_ref": dificil["k"]}))
 
         # --- modelo de conteo (Poisson) a partir del más/menos principal
         stat = g[2]
