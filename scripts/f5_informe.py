@@ -139,12 +139,12 @@ def resumen_diario(reg, dia):
         avisables = sum(1 for a in del_dia if a.get("avisable"))
         lineas += [
             "",
-            f"• Posibles errores: {len(del_dia)}. Merecían alerta (cuota estimada en tu casa entre 1.50 y 2.00 "
+            f"• Posibles errores: {len(del_dia)}. Merecían alerta (cuota estimada en tu casa entre {C.texto_rango()} "
             f"y por encima del justo): {avisables}; avisados por aquí: {avisadas}.",
             "• Por deporte: " + ", ".join(f"{d} {n}" for d, n in por_dep.most_common()) + ".",
             f"• Por tipo: contra el mercado {por_tipo.get('mercado', 0)}, contradicción interna {por_tipo.get('interno', 0)} "
             f"(" + ", ".join(f"{r} {n}" for r, n in por_regla.most_common()) + ").",
-            f"• Apuestas de jugadores: {jug}; con cuota estimada en tu casa entre 1.50 y 2.00: {rango}.",
+            f"• Apuestas de jugadores: {jug}; con cuota estimada en tu casa entre {C.texto_rango()}: {rango}.",
             f"• Ya corregidos: {len(durs)}; duración mediana antes de corregirse: {_dur(_med(durs))}.",
             f"• Duraron 2 min o más (se habrían alcanzado a mirar): {alcanz} de {len(cerradas)} cerrados.",
             f"• Siguen abiertos: {sum(1 for a in del_dia if not a.get('cerrada'))}.",
@@ -189,7 +189,7 @@ def fuerza(a):
 
 
 def orden(a):
-    """Primero las que merecían alerta (1.50-2.00 estimada y sobre el justo), luego por fuerza."""
+    """Primero las que merecían alerta (estimada en el rango y sobre el justo), luego por fuerza."""
     return (bool(a.get("avisable")), fuerza(a))
 
 
@@ -308,8 +308,9 @@ def tablas_finales():
     bloque("Por tipo de error", lambda a: NOMBRE_REGLA.get(a["regla"], a["regla"]).split(":")[0] + f" ({a['regla']})")
     bloque("Jugadores contra el resto", lambda a: "Apuestas de jugadores" if a.get("jugador") else "Resto de apuestas")
     bloque("Por rango de cuota estimada en tu casa", lambda a: "sin estimación" if not a.get("cuota_rb") else
-           "1.50-2.00" if a.get("en_rango") else ("menos de 1.50" if a["cuota_rb"] < 1.5 else "más de 2.00"))
-    bloque("Merecían alerta (estimada 1.50-2.00 y sobre el justo)", lambda a: "merecía alerta" if a.get("avisable") else "solo registro")
+           "dentro del rango de alertas" if a.get("en_rango") else
+           ("debajo del rango" if a["cuota_rb"] < C.RANGO_PREFERIDO[0] else "encima del rango"))
+    bloque("Merecían alerta (estimada en el rango y sobre el justo)", lambda a: "merecía alerta" if a.get("avisable") else "solo registro")
     bloque("Solo las alcanzables (duraron 2 min o más)", lambda a: "alcanzable" if a.get("alcanzable") else "no alcanzable / abierta")
     bloque("Avisadas por Telegram", lambda a: "avisada" if a.get("avisado") else "solo registrada")
     ruta = C.DATA / "tablas.md"

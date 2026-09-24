@@ -70,9 +70,40 @@ UMBRAL_PAR = 0.10             # apuesta que paga más que el precio justo de su 
 UMBRAL_MODELO = 0.30          # contra la escalera estimada de conteo (Poisson)
 UMBRAL_ARBITRAJE = 0.995      # suma de probabilidades de un par menor a esto
 CUOTA_MAX_ALERTA = 10.0       # más arriba casi todo es ruido (pruebas anteriores)
-# Solo se envían ALERTAS si la cuota ESTIMADA en tu casa cae en este rango y sigue
+# Solo se envían ALERTAS si la cuota ESTIMADA en tu casa cae en el rango vigente y sigue
 # por encima del precio justo (ver f5_estimacion.py). Lo demás solo se registra.
-RANGO_PREFERIDO = (1.50, 2.00)
+RANGO_DEFECTO = (1.40, 2.00)
+RANGO_LIMITES = (1.20, 3.00)   # el comando "rango" solo acepta valores dentro de estos límites
+RANGO_PREFERIDO = list(RANGO_DEFECTO)  # rango vigente; se cambia con el comando "rango"
+_ARCHIVO_RANGO = "rango_alertas.txt"   # se guarda con los datos para mantenerlo entre tandas
+
+
+def rango_valido(a, b):
+    return isinstance(a, float) and isinstance(b, float) and RANGO_LIMITES[0] <= a < b <= RANGO_LIMITES[1]
+
+
+def texto_rango():
+    return f"{RANGO_PREFERIDO[0]:.2f} y {RANGO_PREFERIDO[1]:.2f}"
+
+
+def cargar_rango():
+    """Lee el rango guardado; si falta o no es válido, se usa el de defecto."""
+    try:
+        a, b = (float(x) for x in (DATA / _ARCHIVO_RANGO).read_text().split())
+    except (OSError, ValueError):
+        a, b = RANGO_DEFECTO
+    if not rango_valido(a, b):
+        a, b = RANGO_DEFECTO
+    RANGO_PREFERIDO[:] = [a, b]
+    return a, b
+
+
+def guardar_rango(a, b):
+    if not rango_valido(a, b):
+        raise ValueError("rango fuera de los límites")
+    RANGO_PREFERIDO[:] = [a, b]
+    DATA.mkdir(parents=True, exist_ok=True)
+    (DATA / _ARCHIVO_RANGO).write_text(f"{a:.2f} {b:.2f}\n")
 
 
 # Un error que sigue abierto después de esto se da por "alcanzable".

@@ -48,6 +48,8 @@ AYUDA = (
     "• solo NFL (o NBA, MLB, fútbol): avisar solo de ese deporte. \"hoy solo NFL\" o "
     "\"hoy enfócate solo en NFL\" vale hasta la medianoche.\n"
     "• todo: volver a avisar de todos los deportes.\n"
+    "• rango 1.40 2.00: cambiar el rango de cuota estimada en tu casa que genera alertas "
+    "(dos números entre 1.20 y 3.00, el primero menor). \"rango\" solo muestra el vigente.\n"
     "• pausa / seguir: dejar de avisar o volver a avisar (el registro sigue).\n"
     "• apagar: APAGADO DE EMERGENCIA. Deja de leer cuotas y de avisar, también en las "
     "tandas siguientes, hasta que escribas \"encender\".\n"
@@ -66,6 +68,9 @@ _RE_FOCO = re.compile(r"^(hoy\s+)?(?:(enfocate)\s+)?(?:(solo)\s+)?(?:en\s+)?(?:e
                       r"(nfl|nba|mlb|futbol americano|futbol|beisbol|baloncesto)(\s+hoy)?$")
 
 
+_RE_RANGO = re.compile(r"^rango\s+(\d(?:[.,]\d{1,2})?)\s+(\d(?:[.,]\d{1,2})?)$")
+
+
 def interpretar_pedido(texto):
     """
     Traduce un mensaje a uno de los comandos fijos, o None si no es ninguno.
@@ -78,6 +83,14 @@ def interpretar_pedido(texto):
     t = " ".join(t.strip().lstrip("/").strip(" .!?¡¿").split())
     if t in _FIJOS:
         return _FIJOS[t], None, False
+    m = _RE_RANGO.match(t)
+    if m:
+        a, b = (float(x.replace(",", ".")) for x in m.groups())
+        return ("rango", (a, b), False) if C.rango_valido(a, b) else ("rango_invalido", None, False)
+    if t == "rango":
+        return "rango_ver", None, False
+    if t.startswith("rango"):
+        return "rango_invalido", None, False
     m = _RE_FOCO.match(t)
     if m and (m.group(2) or m.group(3)):
         return "foco", _DEPORTE[m.group(4)], bool(m.group(1) or m.group(5))
@@ -110,6 +123,7 @@ def col(ts=None):
 class Agente:
     def __init__(self):
         self.reg = Registro()
+        C.cargar_rango()  # el rango elegido con el comando "rango" se mantiene entre tandas
         self.est = Estimador()
         self.inicio = time.time()
         self.fin = self.inicio + float(os.environ["F5_DURACION"]) if os.environ.get("F5_DURACION") else None
@@ -346,7 +360,7 @@ class Agente:
         vistos = {h["clave"] for h in hallazgos}
         ahora = time.time()
         por_k = {f["k"]: f for f in filas}
-        # Cuota estimada en tu casa y si la señal merece alerta (rango 1.50-2.00 y sobre el justo)
+        # Cuota estimada en tu casa y si la señal merece alerta (dentro del rango y sobre el justo)
         for h in hallazgos:
             h.update(self.est.evaluar(h, por_k, info["deporte"]))
 
@@ -438,7 +452,7 @@ class Agente:
             self.foco, self.foco_hasta = None, None
         if self.pausa or (self.foco and info["deporte"] not in self.foco):
             return
-        # Solo alertas con la cuota ESTIMADA en tu casa entre 1.50 y 2.00 y por encima del justo.
+        # Solo alertas con la cuota ESTIMADA en tu casa dentro del rango vigente y por encima del justo.
         # Todo lo demás queda registrado para el resumen diario y el informe final.
         enviar = [a for a in alertas if a.get("avisable")
                   and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG]
@@ -486,6 +500,21 @@ class Agente:
             elif cmd == "seguir":
                 self.pausa = False
                 T.enviar("PRUEBA — no apostar\nListo: vuelvo a avisar.", chat=chat)
+            elif cmd == "rango_ver":
+                T.enviar(f"PRUEBA — no apostar\n\nRango de alertas vigente: cuota estimada en tu casa entre "
+                         f"{C.texto_rango()}. Para cambiarlo escribe, por ejemplo, \"rango 1.40 2.00\".", chat=chat)
+            elif cmd == "rango_invalido":
+                T.enviar("PRUEBA — no apostar\n\nNo cambié el rango. Escribe \"rango\" y dos números entre "
+                         f"{C.RANGO_LIMITES[0]:.2f} y {C.RANGO_LIMITES[1]:.2f}, el primero menor que el segundo. "
+                         f"Por ejemplo: \"rango 1.40 2.00\". Rango vigente: {C.texto_rango()}.", chat=chat)
+            elif cmd == "rango":
+                C.guardar_rango(*deporte)
+                self.log("rango de alertas cambiado a", C.texto_rango())
+                self.guardar(forzar=True)
+                T.enviar(f"PRUEBA — no apostar\n\nListo: desde ahora solo te aviso si la cuota estimada en tu casa "
+                         f"está entre {C.texto_rango()} y sigue por encima del precio justo. Este rango se mantiene "
+                         "en las tandas siguientes. Todo lo demás se sigue registrando para el resumen y el informe.",
+                         chat=chat)
             elif cmd == "todo":
                 self.foco, self.foco_hasta = None, None
                 T.enviar("PRUEBA — no apostar\nListo: aviso de todos los deportes.", chat=chat)
@@ -532,6 +561,7 @@ class Agente:
                 f"• Lecturas de cuotas: {F.KAMBI.consultas + F.PIN.consultas} (fallidas {F.KAMBI.fallos + F.PIN.fallos}).\n"
                 f"• Cuotas nuevas registradas: {self.reg.contador['nuevas']}; cambios: {self.reg.contador['cambios']}.\n"
                 f"• Errores abiertos ahora: {len(self.reg.alertas_abiertas)}.\n"
+                f"• Rango de alertas: cuota estimada en tu casa entre {C.texto_rango()}.\n"
                 f"• Deportes con aviso: {foco}{' (en pausa)' if self.pausa else ''}"
                 f"{' — APAGADO (escribe encender)' if self.apagado() else ''}.")
 
