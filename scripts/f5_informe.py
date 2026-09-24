@@ -115,7 +115,7 @@ def _dur(seg):
 
 
 def resumen_diario(reg, dia):
-    """Resumen de las alertas detectadas en un día (hora local)."""
+    """Resumen corto del día (hora local): 3 o 4 líneas de totales y la lista en formato corto."""
     todas = leer_alertas()
     # Las que siguen abiertas (el archivo puede no estar volcado todavía)
     for a in reg.alertas_abiertas.values():
@@ -123,49 +123,29 @@ def resumen_diario(reg, dia):
             todas.append(a)
     del_dia = [a for a in todas if hora_col(a["detectado"]).date() == dia]
     res = leer_resultados()
-    lineas = ["PRUEBA — no apostar", "", f"Resumen del {dia.strftime('%d/%m/%Y')} (hora local)"]
+    casa = next((a["casa"] for a in del_dia if a.get("casa")), "tu casa de apuestas")
+    lineas = [f"📋 Resumen {dia.strftime('%d/%m')} · PRUEBA, no apostar"]
     if not del_dia:
-        lineas += ["", "Hoy no se detectó ningún posible error."]
+        lineas += ["Hoy no hubo posibles errores.", ""]
     else:
-        por_dep = Counter(C.DEPORTES[a["deporte"]]["nombre"] for a in del_dia)
-        por_tipo = Counter("interno" if a["tipo"] == "interno" else "mercado" for a in del_dia)
-        por_regla = Counter(a["regla"] for a in del_dia)
         cerradas = [a for a in del_dia if a.get("cerrada")]
         durs = [a["duracion_seg"] for a in cerradas if a.get("motivo") != "empezó el partido"]
-        alcanz = sum(1 for a in cerradas if a.get("alcanzable"))
-        jug = sum(1 for a in del_dia if a.get("jugador"))
-        rango = sum(1 for a in del_dia if a.get("en_rango"))
-        avisadas = sum(1 for a in del_dia if a.get("avisado"))
         avisables = sum(1 for a in del_dia if a.get("avisable"))
-        lineas += [
-            "",
-            f"• Posibles errores: {len(del_dia)}. Merecían alerta (cuota estimada en tu casa entre {C.texto_rango()} "
-            f"y por encima del justo): {avisables}; avisados por aquí: {avisadas}.",
-            "• Por deporte: " + ", ".join(f"{d} {n}" for d, n in por_dep.most_common()) + ".",
-            f"• Por tipo: contra el mercado {por_tipo.get('mercado', 0)}, contradicción interna {por_tipo.get('interno', 0)} "
-            f"(" + ", ".join(f"{r} {n}" for r, n in por_regla.most_common()) + ").",
-            f"• Apuestas de jugadores: {jug}; con cuota estimada en tu casa entre {C.texto_rango()}: {rango}.",
-            f"• Ya corregidos: {len(durs)}; duración mediana antes de corregirse: {_dur(_med(durs))}.",
-            f"• Duraron 2 min o más (se habrían alcanzado a mirar): {alcanz} de {len(cerradas)} cerrados.",
-            f"• Siguen abiertos: {sum(1 for a in del_dia if not a.get('cerrada'))}.",
-        ]
+        avisadas = sum(1 for a in del_dia if a.get("avisado"))
+        lineas.append(f"Posibles errores: {len(del_dia)} · merecían alerta ({C.RANGO_PREFERIDO[0]:.2f}–{C.RANGO_PREFERIDO[1]:.2f}): {avisables} · "
+                      f"avisados: {avisadas}")
+        lineas.append(f"Corregidos: {len(durs)} (mediana {_dur(_med(durs))}) · abiertos: "
+                      f"{sum(1 for a in del_dia if not a.get('cerrada'))}")
         con_res = [a for a in del_dia if res.get(a["id"], {}).get("gana") is not None]
         if con_res:
-            ganancia = sum(res[a["id"]]["unidades"] for a in con_res)
-            ganadas = sum(1 for a in con_res if res[a["id"]]["gana"])
-            lineas.append(f"• Con resultado conocido: {len(con_res)}; se habrían ganado {ganadas}; "
-                          f"ganancia apostando 1 unidad en cada una (a la cuota estimada en tu casa): {ganancia:+.1f} unidades.")
             av = [a for a in con_res if a.get("avisable")]
-            if av:
-                lineas.append(f"• Solo las que merecían alerta: {len(av)}; ganadas {sum(1 for a in av if res[a['id']]['gana'])}; "
-                              f"ganancia {sum(res[a['id']]['unidades'] for a in av):+.1f} unidades.")
+            lineas.append(f"Con resultado: {len(con_res)} · ganadas {sum(1 for a in con_res if res[a['id']]['gana'])} · "
+                          f"{sum(res[a['id']]['unidades'] for a in con_res):+.1f} u"
+                          + (f" (las de alerta: {len(av)} · {sum(res[a['id']]['unidades'] for a in av):+.1f} u)" if av else ""))
         else:
-            lineas.append("• Resultados: todavía no hay partidos terminados con resultado para estas alertas.")
-        lineas += ["", "Con tan pocos datos de un solo día, nada de esto demuestra ganancia ni pérdida.",
-                   "", "Cada posible error del día, del más fuerte al más débil (con o sin aviso):", ""]
-        lineas += ["\n\n".join(lista_errores(del_dia, res))]
-    casa = next((a["casa"] for a in del_dia if a.get("casa")), "tu casa de apuestas")
-    lineas += ["", recordatorio(casa)]
+            lineas.append("Con resultado: todavía ninguno")
+        lineas += [""] + lista_errores(del_dia, res)
+    lineas.append(f"Verifica siempre la cuota real en {casa}.")
     return "\n".join(lineas)
 
 
@@ -196,17 +176,17 @@ def orden(a):
 def _estado(a):
     if a.get("cerrada"):
         if a.get("motivo") == "empezó el partido":
-            return "no se corrigió antes del inicio del partido"
-        return f"corregido a los {_dur(a.get('duracion_seg'))} ({a.get('motivo', 'cuota corregida')})"
+            return "no se corrigió antes del inicio"
+        return f"corregido a los {_dur(a.get('duracion_seg'))}"
     if a.get("ausente_desde"):
-        return "parece corregido (confirmando)"
+        return "parece corregido"
     return "sigue abierto"
 
 
 def _resultado(a, res):
     r = res.get(a["id"])
     if r and r.get("gana") is not None:
-        return f"se habría {'GANADO' if r['gana'] else 'perdido'} ({r['unidades']:+.2f} u a la cuota estimada)"
+        return f"{'GANADA' if r['gana'] else 'perdida'} ({r['unidades']:+.2f} u)"
     if r:
         return "sin resultado (" + r.get("detalle", "no disponible") + ")"
     try:
@@ -214,50 +194,73 @@ def _resultado(a, res):
     except (KeyError, ValueError):
         return "resultado pendiente"
     if time.time() < inicio:
-        return "el partido no ha empezado"
+        return "no ha empezado"
     if time.time() < inicio + 5 * 3600:
-        return "partido en juego o recién terminado"
-    return "partido terminado, resultado pendiente"
+        return "en juego"
+    return "resultado pendiente"
+
+
+def _hora_corta(a):
+    try:
+        return hora_col(a["inicio"]).strftime("%d/%m %H:%M")
+    except (KeyError, ValueError):
+        return "—"
+
+
+def _justa(a):
+    """Precio justo que se muestra: el de la regla medido para tu casa; si no hay, Pinnacle o el estimado."""
+    return a.get("justa_rb") or _pin(a) or a.get("justa")
+
+
+def texto_corto(a, marca="🟢"):
+    """El formato corto de una alerta (4 líneas)."""
+    casa = a.get("casa") or "Tu casa"
+    paga = a.get("cuota_rb") or a["cuota"]
+    justa = _justa(a)
+    ventaja = a.get("ventaja_rb") if a.get("ventaja_rb") is not None else (paga / justa - 1 if justa else None)
+    return "\n".join([
+        f"{marca} {a.get('apuesta', '')}",
+        f"{a.get('partido', '')} · {_hora_corta(a)}",
+        f"{casa} paga {paga:.2f} → debería pagar " + (f"{justa:.2f}" if justa else "—"),
+        (f"Ventaja {ventaja:+.1%}" if ventaja is not None else "Ventaja —") + f" · Confianza {a.get('confianza', '—')}",
+    ])
+
+
+def bloque_tarjeta(a):
+    """Los mismos datos del texto corto, para la imagen."""
+    paga = a.get("cuota_rb") or a["cuota"]
+    justa = _justa(a) or paga
+    return {"apuesta": a.get("apuesta", ""), "partido": a.get("partido", ""), "hora": _hora_corta(a),
+            "casa": a.get("casa") or "Tu casa", "paga": paga, "justa": justa,
+            "ventaja": a.get("ventaja_rb") if a.get("ventaja_rb") is not None else paga / justa - 1,
+            "confianza": a.get("confianza", "—")}
 
 
 def texto_error(i, a, res):
-    dep = C.DEPORTES.get(a.get("deporte"), {})
-    pin = _pin(a)
-    dif = fuerza(a)
-    if pin:
-        precio = f"Pinnacle justo {pin:.2f} · diferencia {dif:+.1%}"
-    else:
-        est = a.get("justa")
-        cota = "menos de " if a.get("cota") else ""
-        precio = (f"Pinnacle: no tiene esta apuesta · justo estimado {cota}{est:.2f} (contradicción interna) · "
-                  f"diferencia {dif:+.1%}") if est else "Pinnacle: no tiene esta apuesta"
-    return "\n".join([
-        f"{i}) {dep.get('emoji', '')} {a.get('partido', '')} · empieza {hora_col(a['inicio']).strftime('%d/%m %H:%M')}",
-        f"   Apuesta: {a.get('apuesta', '')}" + (" [jugador]" if a.get("jugador") else ""),
-        (f"   Estimada en {a.get('casa') or 'tu casa'} {a['cuota_rb']:.2f} · Kambi {a['cuota']:.2f} · {precio}"
-         if a.get("cuota_rb") else f"   Kambi {a['cuota']:.2f} (sin estimación de tu casa) · {precio}")
-        + (" · MERECÍA ALERTA" if a.get("avisable") else ""),
-        f"   {_estado(a)} · {_resultado(a, res)}" + (" · avisado" if a.get("avisado") else " · sin aviso"),
-    ])
+    """Formato corto más una línea con cómo terminó."""
+    return texto_corto(a, "🟢" if a.get("avisable") else "⚪") + f"\n{_estado(a)} · {_resultado(a, res)}"
 
 
 def lista_errores(alertas, res):
     """Los errores ordenados del más fuerte al más débil, como máximo 15."""
     ordenadas = sorted(alertas, key=orden, reverse=True)
-    lineas = [texto_error(i, a, res) for i, a in enumerate(ordenadas[:MAX_LISTA], 1)]
+    lineas = [texto_error(i, a, res) + "\n" for i, a in enumerate(ordenadas[:MAX_LISTA], 1)]
     if len(ordenadas) > MAX_LISTA:
-        lineas.append(f"… y {len(ordenadas) - MAX_LISTA} más (los más débiles), que quedan en el registro.")
+        lineas.append(f"… y {len(ordenadas) - MAX_LISTA} más (los más débiles), en el registro.")
     return lineas
 
 
 def detalle_abiertos(reg):
-    """Para el comando "detalle": los posibles errores que siguen abiertos ahora."""
+    """Para el comando "detalle": los posibles errores que siguen abiertos ahora, en formato corto."""
     abiertos = list(reg.alertas_abiertas.values())
-    partes = ["PRUEBA — no apostar", f"Posibles errores abiertos ahora: {len(abiertos)}"]
+    casa = next((a["casa"] for a in abiertos if a.get("casa")), "tu casa de apuestas")
+    lineas = [f"🔎 Abiertos ahora: {len(abiertos)} · PRUEBA, no apostar", ""]
     if abiertos:
-        partes += ["Del más fuerte al más débil:"] + lista_errores(abiertos, leer_resultados())
-    partes.append(recordatorio(next((a["casa"] for a in abiertos if a.get("casa")), "tu casa de apuestas")))
-    return "\n\n".join(partes)
+        lineas += lista_errores(abiertos, leer_resultados())
+    else:
+        lineas.append("Ningún posible error abierto en este momento.\n")
+    lineas.append(f"Verifica siempre la cuota real en {casa}.")
+    return "\n".join(lineas)
 
 
 # ---------------------------------------------------------------------------- informe final

@@ -10,6 +10,7 @@ Fase 5: envío de alertas y lectura de pedidos por Telegram.
 - Para averiguar el número de chat una sola vez:
     python f5_telegram.py mi_chat 10   (espera 10 minutos un "hola" al bot)
 """
+import json
 import os
 import time
 
@@ -24,12 +25,17 @@ def activo():
     return bool(_TOKEN)
 
 
-def _llamar(metodo, datos=None, timeout=40):
+def _llamar(metodo, datos=None, timeout=40, archivos=None):
     if not _TOKEN:
         return None
     for intento in range(3):
         try:
-            r = _S.post(_API.format(token=_TOKEN, metodo=metodo), json=datos or {}, timeout=timeout)
+            if archivos:
+                # Envío de imagen: los datos van como formulario (reply_markup en JSON)
+                form = {k: (json.dumps(v) if isinstance(v, (dict, list)) else str(v)) for k, v in (datos or {}).items()}
+                r = _S.post(_API.format(token=_TOKEN, metodo=metodo), data=form, files=archivos, timeout=timeout)
+            else:
+                r = _S.post(_API.format(token=_TOKEN, metodo=metodo), json=datos or {}, timeout=timeout)
             d = r.json()
             if d.get("ok"):
                 return d["result"]
@@ -67,6 +73,38 @@ def enviar(texto, chat=None):
     return ok
 
 
+def enlace_seguro(url):
+    """Solo se aceptan enlaces https (el del botón para abrir el partido)."""
+    return isinstance(url, str) and url.startswith("https://") and len(url) < 300 and " " not in url
+
+
+def enviar_alerta(texto, imagen=None, boton=None):
+    """
+    Envía una alerta a los chats autorizados: la imagen (si hay) con el texto
+    corto debajo, y un botón con enlace (si hay). Si la imagen falla, manda
+    solo el texto. Devuelve los números de los mensajes enviados (para "más").
+    """
+    teclado = None
+    if boton and enlace_seguro(boton[1]):
+        teclado = {"inline_keyboard": [[{"text": boton[0], "url": boton[1]}]]}
+    ids = []
+    for c in chats():
+        r = None
+        if imagen:
+            datos = {"chat_id": c, "caption": texto[:1024]}
+            if teclado:
+                datos["reply_markup"] = teclado
+            r = _llamar("sendPhoto", datos, timeout=60, archivos={"photo": ("alerta.png", imagen, "image/png")})
+        if r is None:
+            datos = {"chat_id": c, "text": texto[:4000], "disable_web_page_preview": True}
+            if teclado:
+                datos["reply_markup"] = teclado
+            r = _llamar("sendMessage", datos)
+        if r and "message_id" in r:
+            ids.append(r["message_id"])
+    return ids
+
+
 def _es_autorizado(m, autorizados):
     """Mensaje privado, escrito por una persona, desde un chat autorizado."""
     chat, remitente = m.get("chat", {}), m.get("from", {})
@@ -98,7 +136,9 @@ class Pedidos:
                 self.ignorados += 1
                 continue
             if texto:
-                salida.append((str(m["chat"]["id"]), texto))
+                # A qué mensaje responde (para "más"); solo el número, nunca el texto
+                resp = (m.get("reply_to_message") or {}).get("message_id")
+                salida.append((str(m["chat"]["id"]), texto, resp))
         return salida
 
 

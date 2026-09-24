@@ -32,7 +32,8 @@ import f5_telegram as T  # noqa: E402
 
 # ---------------------------------------------------------------- 2. comandos fijos
 aceptados = {
-    "estado": ("estado", None, False), "/estado": ("estado", None, False), "Resumen": ("resumen", None, False),
+    "estado": ("estado", None, False), "/estado": ("estado", None, False), "más": ("mas", None, False),
+    "Más": ("mas", None, False), "Resumen": ("resumen", None, False),
     "pausa": ("pausa", None, False), "seguir": ("seguir", None, False), "todo": ("todo", None, False),
     "ayuda": ("ayuda", None, False), "detalle": ("detalle", None, False), "Detalle.": ("detalle", None, False),
     "apagar": ("apagar", None, False), "encender": ("encender", None, False),
@@ -57,13 +58,24 @@ print("Comandos fijos: OK")
 
 # ---------------------------------------------------------------- 1, 3, 4, 5. bot simulado
 enviados = []
+fotos = []    # (chat, texto corto, botón) de cada imagen enviada
+botones = []  # botón (o None) de cada mensaje enviado
 cola = []
+_n_msj = [1000]
 
 
-def falso_llamar(metodo, datos=None, timeout=40):
+def falso_llamar(metodo, datos=None, timeout=40, archivos=None):
     if metodo == "sendMessage":
         enviados.append((str(datos["chat_id"]), datos["text"]))
-        return {}
+        botones.append(datos.get("reply_markup"))
+        _n_msj[0] += 1
+        return {"message_id": _n_msj[0]}
+    if metodo == "sendPhoto":
+        enviados.append((str(datos["chat_id"]), datos["caption"]))
+        fotos.append((str(datos["chat_id"]), datos["caption"], datos.get("reply_markup")))
+        botones.append(datos.get("reply_markup"))
+        _n_msj[0] += 1
+        return {"message_id": _n_msj[0]}
     if metodo == "getUpdates":
         res, cola[:] = list(cola), []
         return res
@@ -73,10 +85,12 @@ def falso_llamar(metodo, datos=None, timeout=40):
 T._llamar = falso_llamar
 
 
-def msg(uid, chat, tipo, texto, bot=False):
-    return {"update_id": uid, "message": {"chat": {"id": int(chat), "type": tipo},
-                                          "from": {"id": int(chat) if tipo == "private" else 1, "is_bot": bot},
-                                          "text": texto}}
+def msg(uid, chat, tipo, texto, bot=False, responde_a=None):
+    m = {"chat": {"id": int(chat), "type": tipo},
+         "from": {"id": int(chat) if tipo == "private" else 1, "is_bot": bot}, "text": texto}
+    if responde_a:
+        m["reply_to_message"] = {"message_id": responde_a}
+    return {"update_id": uid, "message": m}
 
 
 salida = io.StringIO()
@@ -136,26 +150,48 @@ with contextlib.redirect_stdout(salida):
     ag.ultimo_pedido = 0
     ag.atender_pedidos()
     det = enviados[-1][1]
-    assert "Posibles errores abiertos ahora: 20" in det and "19) " not in det and "15) " in det
-    assert "y 5 más" in det and det.index("Apuesta 19") < det.index("Apuesta 18"), "orden o tope de 15 incorrecto"
-    assert "Pinnacle justo" in det and "Pinnacle: no tiene esta apuesta" in det
+    assert "Abiertos ahora: 20" in det and det.count("⚪ Apuesta") == 15, "tope de 15 incorrecto"
+    assert "y 5 más" in det and det.index("Apuesta 19") < det.index("Apuesta 18"), "orden incorrecto"
+    assert "paga 2.00 → debería pagar" in det and "Ventaja" in det and "Confianza" in det
     res = INF.resumen_diario(ag.reg, A.col().date())
-    assert "Cada posible error del día" in res and "y 5 más" in res and "sin aviso" in res
+    totales = res.split("\n\n")[0].split("\n")
+    assert len(totales) <= 5 and "Posibles errores: 20" in res and "y 5 más" in res, "resumen no es corto"
     ag.reg.alertas_abiertas.clear()
     # Solo se envían ALERTAS de las señales que lo merecen (estimada en el rango y sobre el justo)
     info = {"deporte": "nfl", "nombre": "Equipo A - Equipo B", "liga": "Liga", "inicio": "2099-01-01T00:00:00Z"}
     base = {"clave": "mercado:1", "k": 1, "apuesta": "Más de 45.5", "cuota": 1.95, "justa": 1.75, "regla": "mercado",
             "tipo": "mercado", "respaldo": "r", "explicacion": "e", "confianza": "media", "detectado": ahora,
-            "casa": "Casa de prueba", "cuota_rb": 1.93, "rango_rb": [1.91, 1.94], "justa_rb": 1.75, "ventaja_rb": 0.103}
+            "casa": "Casa de prueba", "partido": "Equipo A - Equipo B", "inicio": "2099-01-01T00:00:00Z",
+            "deporte": "nfl", "liga": "Liga", "cuota_rb": 1.93, "rango_rb": [1.91, 1.94], "justa_rb": 1.75, "ventaja_rb": 0.103}
     antes = len(enviados)
     ag.avisar(info, [dict(base, avisable=False, clave="mercado:9")])
     assert len(enviados) == antes, "se envió una alerta que no la merecía"
-    ag.avisar(info, [dict(base, avisable=True)])
-    assert len(enviados) == antes + 1 and "Cuota estimada en Casa de prueba: 1.93" in enviados[-1][1]
-print("Solo alertas con cuota estimada en el rango y sobre el justo; comando rango seguro y persistente: OK")
+    info["id"] = 1028811658
+    ag.est.enlace = "https://casa.example/?page=sportsbook#event/{id}"
+    alerta = dict(base, avisable=True, id="al-1")
+    ag.reg.alertas_abiertas[alerta["clave"]] = alerta  # como en la vida real: la alerta está en el registro
+    ag.avisar(info, [alerta])
+    corto = enviados[-1][1]
+    import f5_tarjeta
+    assert f5_tarjeta.Image is None or fotos, "con Pillow instalado la alerta debe ir como imagen"
+    assert len(enviados) == antes + 1 and corto.startswith("🟢 Más de 45.5")
+    assert "Casa de prueba paga 1.93 → debería pagar 1.75" in corto and "Ventaja +10.3% · Confianza media" in corto
+    assert len(corto.split("\n")) == 4, "la alerta corta debe tener 4 líneas"
+    boton = (botones[-1] or {}).get("inline_keyboard", [[None]])[0][0]
+    assert boton and boton["url"].endswith("#event/1028811658"), "falta el botón con el enlace al partido"
+    # "más" respondiendo a la alerta: explicación completa; de otra persona: nada
+    mid = _n_msj[0]
+    cola[:] = [msg(30, EXTRANO, "private", "más", responde_a=mid), msg(31, MI_CHAT, "private", "más", responde_a=mid)]
+    ag.ultimo_pedido = 0
+    ag.atender_pedidos()
+    assert "Explicación: e" in enviados[-1][1] and enviados[-1][0] == MI_CHAT
+    # un enlace que no sea https no se usa
+    assert T.enviar_alerta("x", None, ("b", "javascript:alert(1)")) and botones[-1] is None
+    ag.reg.alertas_abiertas.clear()
+print("Alertas cortas con imagen y botón, \"más\" solo para tu chat, solo si merecen alerta; comando rango seguro: OK")
 print("Resumen y \"detalle\" listan los errores (15 más fuertes y cuántos faltan): OK")
 
-destinos = {c for c, _ in enviados}
+destinos = {c for c, _ in enviados} | {c for c, _, _ in fotos}
 assert destinos == {MI_CHAT}, f"se envió a un chat no autorizado: {destinos}"
 assert ag.foco == {"nfl"} and ag.foco_hasta, "el pedido de enfoque no se aplicó"
 respuestas = [t for _, t in enviados]
