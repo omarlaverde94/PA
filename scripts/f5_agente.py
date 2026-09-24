@@ -32,7 +32,8 @@ import f5_config as C
 import f5_fuentes as F
 import f5_informe as INF
 import f5_telegram as T
-from f5_detector import contra_mercado, internos
+from f5_detector import agregar_pinnacle, contra_mercado, internos
+from f5_estimacion import Estimador
 from f5_registro import Registro, ahora_iso, iso_a_ts
 
 GIT_REINTENTO_SEG = 300  # reintento del guardado cuando falla
@@ -42,7 +43,8 @@ AYUDA = (
     "PRUEBA — no apostar\n\n"
     "Pedidos que entiendo (escríbelos tal cual):\n"
     "• estado: cómo va el agente.\n"
-    "• resumen: el resumen del día ahora mismo.\n"
+    "• resumen: el resumen del día ahora mismo, con la lista de posibles errores.\n"
+    "• detalle: los posibles errores que siguen abiertos en este momento.\n"
     "• solo NFL (o NBA, MLB, fútbol): avisar solo de ese deporte. \"hoy solo NFL\" o "
     "\"hoy enfócate solo en NFL\" vale hasta la medianoche.\n"
     "• todo: volver a avisar de todos los deportes.\n"
@@ -57,6 +59,7 @@ NO_ENTENDI = "PRUEBA — no apostar\n\nNo es un pedido que yo conozca. Escribe \
 _DEPORTE = {"nfl": "nfl", "futbol americano": "nfl", "nba": "nba", "baloncesto": "nba",
             "mlb": "mlb", "beisbol": "mlb", "futbol": "futbol"}
 _FIJOS = {"ayuda": "ayuda", "start": "ayuda", "help": "ayuda", "estado": "estado", "resumen": "resumen",
+          "detalle": "detalle",
           "pausa": "pausa", "seguir": "seguir", "todo": "todo", "todos": "todo",
           "apagar": "apagar", "encender": "encender"}
 _RE_FOCO = re.compile(r"^(hoy\s+)?(?:(enfocate)\s+)?(?:(solo)\s+)?(?:en\s+)?(?:el\s+)?"
@@ -107,6 +110,7 @@ def col(ts=None):
 class Agente:
     def __init__(self):
         self.reg = Registro()
+        self.est = Estimador()
         self.inicio = time.time()
         self.fin = self.inicio + float(os.environ["F5_DURACION"]) if os.environ.get("F5_DURACION") else None
         self.git_cada = float(os.environ.get("F5_GIT_CADA", "0"))
@@ -337,10 +341,14 @@ class Agente:
         if not info or not filas or self.reg.empezo(evid):
             return
         props, hora_pin = self.props_pinnacle(evid)
-        hallazgos = internos(filas, info) + contra_mercado(filas, info, props)
+        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
+                                     filas, info, props)
         vistos = {h["clave"] for h in hallazgos}
         ahora = time.time()
         por_k = {f["k"]: f for f in filas}
+        # Cuota estimada en tu casa y si la señal merece alerta (rango 1.50-2.00 y sobre el justo)
+        for h in hallazgos:
+            h.update(self.est.evaluar(h, por_k, info["deporte"]))
 
         # Errores abiertos que ya no están: se corrigieron (o se quitaron)
         for clave, a in list(self.reg.alertas_abiertas.items()):
@@ -351,6 +359,13 @@ class Agente:
                 f = por_k.get(a["k"])
                 if f:
                     a["cuota_max"] = max(a.get("cuota_max", 0), f["odds"])
+                h = next(x for x in hallazgos if x["clave"] == clave)
+                if h["avisable"] and not a.get("avisable"):
+                    # La señal pasó a merecer alerta (por ejemplo, la cuota entró al rango)
+                    a.update({k: h[k] for k in ("cuota", "cuota_rb", "rango_rb", "justa_rb", "ventaja_rb",
+                                                  "en_rango", "avisable")})
+                    a["avisable_desde"] = ahora_iso(ahora)
+                    self.avisar(info, [a])
                 continue
             if "ausente_desde" not in a:
                 f = por_k.get(a["k"])
@@ -423,11 +438,13 @@ class Agente:
             self.foco, self.foco_hasta = None, None
         if self.pausa or (self.foco and info["deporte"] not in self.foco):
             return
-        enviar = [a for a in alertas if ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG
-                  and (a["tipo"] == "interno" or a["en_rango"] or (a["ventaja"] or 0) >= C.AVISAR_MERCADO_MIN)]
+        # Solo alertas con la cuota ESTIMADA en tu casa entre 1.50 y 2.00 y por encima del justo.
+        # Todo lo demás queda registrado para el resumen diario y el informe final.
+        enviar = [a for a in alertas if a.get("avisable")
+                  and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG]
         if not enviar or len(self.avisos_hora) >= C.MAX_AVISOS_HORA:
             return
-        enviar.sort(key=lambda a: (a["tipo"] != "interno", -(a["ventaja"] or 0)))
+        enviar.sort(key=lambda a: -(a.get("ventaja_rb") or 0))
         texto = INF.texto_alerta(info, enviar[:5], len(enviar))
         if T.enviar(texto):
             self.avisos_hora.append(ahora)
@@ -461,6 +478,8 @@ class Agente:
                 T.enviar("PRUEBA — no apostar\n\nEl agente está APAGADO. Escribe \"encender\" para prenderlo.", chat=chat)
             elif cmd == "resumen":
                 T.enviar(INF.resumen_diario(self.reg, col().date()), chat=chat)
+            elif cmd == "detalle":
+                T.enviar(INF.detalle_abiertos(self.reg), chat=chat)
             elif cmd == "pausa":
                 self.pausa = True
                 T.enviar("PRUEBA — no apostar\nListo: dejo de avisar (sigo registrando). Escribe \"seguir\" para volver.", chat=chat)
@@ -613,6 +632,12 @@ class Agente:
         if T.activo() and not T.chats():
             self.log("AVISO: falta TELEGRAM_CHAT_ID; no se envían avisos ni se obedecen pedidos")
         self.probar_guardado()
+        if self.est.ok:
+            self.log("estimación de la cuota de tu casa: tabla cargada")
+        else:
+            self.log("AVISO: falta la tabla para estimar la cuota de tu casa; se registra todo pero no se envían alertas")
+            T.enviar("PRUEBA — no apostar\n\nNo encontré la tabla para estimar la cuota de tu casa de apuestas. "
+                     "Sigo leyendo y registrando todo, pero NO envío alertas hasta tenerla.")
         if self.apagado():
             self.log("el agente está APAGADO (apagado de emergencia); solo escucha \"encender\"")
         if T.activo() and T.chats() and not os.environ.get("F5_SIN_SALUDO"):

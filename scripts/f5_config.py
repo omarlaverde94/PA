@@ -70,12 +70,10 @@ UMBRAL_PAR = 0.10             # apuesta que paga más que el precio justo de su 
 UMBRAL_MODELO = 0.30          # contra la escalera estimada de conteo (Poisson)
 UMBRAL_ARBITRAJE = 0.995      # suma de probabilidades de un par menor a esto
 CUOTA_MAX_ALERTA = 10.0       # más arriba casi todo es ruido (pruebas anteriores)
+# Solo se envían ALERTAS si la cuota ESTIMADA en tu casa cae en este rango y sigue
+# por encima del precio justo (ver f5_estimacion.py). Lo demás solo se registra.
 RANGO_PREFERIDO = (1.50, 2.00)
 
-# Avisos "contra el mercado": en pruebas anteriores las diferencias chicas fuera de
-# 1.50-2.00 perdieron. Se registran todas, pero solo se avisan por Telegram
-# las que pagan al menos esto más, o las que están en 1.50-2.00.
-AVISAR_MERCADO_MIN = 0.10
 
 # Un error que sigue abierto después de esto se da por "alcanzable".
 ALCANZABLE_SEG = 120

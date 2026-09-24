@@ -5,6 +5,7 @@ registro de alertas para los resúmenes y el informe final.
 import gzip
 import json
 import statistics
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -17,8 +18,17 @@ NOMBRE_REGLA = {
     "modelo": "Contradicción interna de Kambi (estimada con un modelo sencillo)",
     "arbitraje": "Contradicción interna de Kambi: las opciones del mercado suman menos de 100%",
 }
-RECORDATORIO = ("Verifica la cuota real en tu casa de apuestas: puede ser distinta (suele pagar un poco menos que Paf) "
-                "y puede cambiar entre este aviso y el momento de mirar.")
+
+
+def recordatorio(casa="tu casa de apuestas"):
+    return (f"Verifica la cuota real en {casa}: la cuota estimada puede fallar y la real puede cambiar "
+            "entre este aviso y el momento de mirar.")
+
+
+RECORDATORIO = recordatorio()
+ORIGEN_JUSTO = {"mercado": "Pinnacle sin margen", "par": "el más/menos del propio Kambi, sin margen",
+                "modelo": "modelo sencillo con la línea principal de Kambi",
+                "escalera": "cuota estimada de la apuesta más difícil", "arbitraje": "lo que dejan las otras opciones"}
 
 
 def hora_col(iso):
@@ -29,29 +39,34 @@ def hora_col(iso):
 def texto_alerta(info, alertas, total):
     dep = C.DEPORTES[info["deporte"]]
     ini = hora_col(info["inicio"])
+    casa = alertas[0].get("casa") or "tu casa de apuestas"
     lineas = ["PRUEBA — no apostar", "",
               f"{dep['emoji']} Partido: {info['nombre']}",
               f"Liga: {info['liga']} · empieza {ini.strftime('%d/%m %H:%M')} (hora local)"]
     for i, a in enumerate(alertas, 1):
-        justa = f"{a['justa']:.2f}" if a.get("justa") else "—"
-        if a.get("cota"):
-            justa = f"menos de {justa}"
-        ventaja = f" (paga {a['ventaja']:.0%} más)" if a.get("ventaja") is not None and not a.get("cota") else ""
-        rango = "sí" if a["en_rango"] else "no"
+        cota = "menos de " if a.get("cota") or a["regla"] == "escalera" else ""
+        justa = f"{cota}{a['justa_rb']:.2f}" if a.get("justa_rb") else "—"
+        rango80 = a.get("rango_rb") or [None, None]
         lineas += [
             "",
             f"{i}) Apuesta: {a['apuesta']}" + (" [jugador]" if a.get("jugador") else ""),
+            f"• Cuota estimada en {casa}: {a['cuota_rb']:.2f}"
+            + (f" (normalmente entre {rango80[0]:.2f} y {rango80[1]:.2f})" if rango80[0] else ""),
             f"• Cuota en Kambi (Paf): {a['cuota']:.2f}" + (f" · Unibet: {a['cuota_unibet']:.2f}" if a.get("cuota_unibet") else ""),
-            f"• Precio justo estimado: {justa}{ventaja}",
+            f"• Precio justo: {justa} ({ORIGEN_JUSTO.get(a['regla'], 'estimado')})"
+            + (f" · Pinnacle: {a['pin_justa']:.2f}" if a.get("pin_justa") and a["regla"] != "mercado" else ""),
+            f"• Ventaja con la cuota estimada en {casa}: {a['ventaja_rb']:+.1%}" if a.get("ventaja_rb") is not None else
+            f"• Ventaja con la cuota estimada en {casa}: sin dato",
             f"• Tipo de error: {NOMBRE_REGLA.get(a['regla'], a['regla'])}",
             f"• Respaldo: {a['respaldo']}",
-            f"• Confianza: {a['confianza']} · en rango 1.50-2.00: {rango}",
-            f"• Detectado: {hora_col(a['detectado']).strftime('%d/%m %H:%M:%S')} (hora local)",
-            f"• Explicación: {a['explicacion']}",
+            f"• Confianza: {a['confianza']}",
+            f"• Detectado: {hora_col(a.get('avisable_desde') or a['detectado']).strftime('%d/%m %H:%M:%S')} (hora local)",
+            f"• Explicación: {a['explicacion']} Con la cuota estimada en {casa} ({a['cuota_rb']:.2f}) "
+            f"la apuesta sigue por encima del precio justo.",
         ]
     if total > len(alertas):
         lineas += ["", f"(Hay {total - len(alertas)} apuestas más con el mismo tipo de señal en este partido; quedan en el registro.)"]
-    lineas += ["", RECORDATORIO]
+    lineas += ["", recordatorio(casa)]
     return "\n".join(lineas)
 
 
@@ -121,13 +136,15 @@ def resumen_diario(reg, dia):
         jug = sum(1 for a in del_dia if a.get("jugador"))
         rango = sum(1 for a in del_dia if a.get("en_rango"))
         avisadas = sum(1 for a in del_dia if a.get("avisado"))
+        avisables = sum(1 for a in del_dia if a.get("avisable"))
         lineas += [
             "",
-            f"• Posibles errores: {len(del_dia)} (avisados por aquí: {avisadas}).",
+            f"• Posibles errores: {len(del_dia)}. Merecían alerta (cuota estimada en tu casa entre 1.50 y 2.00 "
+            f"y por encima del justo): {avisables}; avisados por aquí: {avisadas}.",
             "• Por deporte: " + ", ".join(f"{d} {n}" for d, n in por_dep.most_common()) + ".",
             f"• Por tipo: contra el mercado {por_tipo.get('mercado', 0)}, contradicción interna {por_tipo.get('interno', 0)} "
             f"(" + ", ".join(f"{r} {n}" for r, n in por_regla.most_common()) + ").",
-            f"• Apuestas de jugadores: {jug}; en cuota 1.50-2.00: {rango}.",
+            f"• Apuestas de jugadores: {jug}; con cuota estimada en tu casa entre 1.50 y 2.00: {rango}.",
             f"• Ya corregidos: {len(durs)}; duración mediana antes de corregirse: {_dur(_med(durs))}.",
             f"• Duraron 2 min o más (se habrían alcanzado a mirar): {alcanz} de {len(cerradas)} cerrados.",
             f"• Siguen abiertos: {sum(1 for a in del_dia if not a.get('cerrada'))}.",
@@ -137,12 +154,110 @@ def resumen_diario(reg, dia):
             ganancia = sum(res[a["id"]]["unidades"] for a in con_res)
             ganadas = sum(1 for a in con_res if res[a["id"]]["gana"])
             lineas.append(f"• Con resultado conocido: {len(con_res)}; se habrían ganado {ganadas}; "
-                          f"ganancia apostando 1 unidad en cada una: {ganancia:+.1f} unidades.")
+                          f"ganancia apostando 1 unidad en cada una (a la cuota estimada en tu casa): {ganancia:+.1f} unidades.")
+            av = [a for a in con_res if a.get("avisable")]
+            if av:
+                lineas.append(f"• Solo las que merecían alerta: {len(av)}; ganadas {sum(1 for a in av if res[a['id']]['gana'])}; "
+                              f"ganancia {sum(res[a['id']]['unidades'] for a in av):+.1f} unidades.")
         else:
             lineas.append("• Resultados: todavía no hay partidos terminados con resultado para estas alertas.")
-        lineas += ["", "Con tan pocos datos de un solo día, nada de esto demuestra ganancia ni pérdida."]
-    lineas += ["", RECORDATORIO]
+        lineas += ["", "Con tan pocos datos de un solo día, nada de esto demuestra ganancia ni pérdida.",
+                   "", "Cada posible error del día, del más fuerte al más débil (con o sin aviso):", ""]
+        lineas += ["\n\n".join(lista_errores(del_dia, res))]
+    casa = next((a["casa"] for a in del_dia if a.get("casa")), "tu casa de apuestas")
+    lineas += ["", recordatorio(casa)]
     return "\n".join(lineas)
+
+
+# ---------------------------------------------------------------------------- lista de errores
+MAX_LISTA = 15
+
+
+def _pin(a):
+    """Precio justo de Pinnacle de una alerta (las viejas solo lo tienen en las de mercado)."""
+    if a.get("pin_justa"):
+        return a["pin_justa"]
+    return a.get("justa") if a.get("regla") == "mercado" else None
+
+
+def fuerza(a):
+    """Diferencia de la cuota estimada en tu casa (o la de Kambi si no hay estimación)
+    contra Pinnacle (o contra el precio justo estimado)."""
+    ref = _pin(a) or a.get("justa")
+    cuota = a.get("cuota_rb") or a["cuota"]
+    return cuota / ref - 1 if ref else (a.get("ventaja") or 0)
+
+
+def orden(a):
+    """Primero las que merecían alerta (1.50-2.00 estimada y sobre el justo), luego por fuerza."""
+    return (bool(a.get("avisable")), fuerza(a))
+
+
+def _estado(a):
+    if a.get("cerrada"):
+        if a.get("motivo") == "empezó el partido":
+            return "no se corrigió antes del inicio del partido"
+        return f"corregido a los {_dur(a.get('duracion_seg'))} ({a.get('motivo', 'cuota corregida')})"
+    if a.get("ausente_desde"):
+        return "parece corregido (confirmando)"
+    return "sigue abierto"
+
+
+def _resultado(a, res):
+    r = res.get(a["id"])
+    if r and r.get("gana") is not None:
+        return f"se habría {'GANADO' if r['gana'] else 'perdido'} ({r['unidades']:+.2f} u a la cuota estimada)"
+    if r:
+        return "sin resultado (" + r.get("detalle", "no disponible") + ")"
+    try:
+        inicio = datetime.strptime(a["inicio"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (KeyError, ValueError):
+        return "resultado pendiente"
+    if time.time() < inicio:
+        return "el partido no ha empezado"
+    if time.time() < inicio + 5 * 3600:
+        return "partido en juego o recién terminado"
+    return "partido terminado, resultado pendiente"
+
+
+def texto_error(i, a, res):
+    dep = C.DEPORTES.get(a.get("deporte"), {})
+    pin = _pin(a)
+    dif = fuerza(a)
+    if pin:
+        precio = f"Pinnacle justo {pin:.2f} · diferencia {dif:+.1%}"
+    else:
+        est = a.get("justa")
+        cota = "menos de " if a.get("cota") else ""
+        precio = (f"Pinnacle: no tiene esta apuesta · justo estimado {cota}{est:.2f} (contradicción interna) · "
+                  f"diferencia {dif:+.1%}") if est else "Pinnacle: no tiene esta apuesta"
+    return "\n".join([
+        f"{i}) {dep.get('emoji', '')} {a.get('partido', '')} · empieza {hora_col(a['inicio']).strftime('%d/%m %H:%M')}",
+        f"   Apuesta: {a.get('apuesta', '')}" + (" [jugador]" if a.get("jugador") else ""),
+        (f"   Estimada en {a.get('casa') or 'tu casa'} {a['cuota_rb']:.2f} · Kambi {a['cuota']:.2f} · {precio}"
+         if a.get("cuota_rb") else f"   Kambi {a['cuota']:.2f} (sin estimación de tu casa) · {precio}")
+        + (" · MERECÍA ALERTA" if a.get("avisable") else ""),
+        f"   {_estado(a)} · {_resultado(a, res)}" + (" · avisado" if a.get("avisado") else " · sin aviso"),
+    ])
+
+
+def lista_errores(alertas, res):
+    """Los errores ordenados del más fuerte al más débil, como máximo 15."""
+    ordenadas = sorted(alertas, key=orden, reverse=True)
+    lineas = [texto_error(i, a, res) for i, a in enumerate(ordenadas[:MAX_LISTA], 1)]
+    if len(ordenadas) > MAX_LISTA:
+        lineas.append(f"… y {len(ordenadas) - MAX_LISTA} más (los más débiles), que quedan en el registro.")
+    return lineas
+
+
+def detalle_abiertos(reg):
+    """Para el comando "detalle": los posibles errores que siguen abiertos ahora."""
+    abiertos = list(reg.alertas_abiertas.values())
+    partes = ["PRUEBA — no apostar", f"Posibles errores abiertos ahora: {len(abiertos)}"]
+    if abiertos:
+        partes += ["Del más fuerte al más débil:"] + lista_errores(abiertos, leer_resultados())
+    partes.append(recordatorio(next((a["casa"] for a in abiertos if a.get("casa")), "tu casa de apuestas")))
+    return "\n\n".join(partes)
 
 
 # ---------------------------------------------------------------------------- informe final
@@ -175,8 +290,8 @@ def tablas_finales():
     enc = ("| Grupo | Errores | Duración mediana | Alcanzables (2+ min) | Con resultado | Ganadas | "
            "Ganancia (u) | Rendimiento ± margen | Peor racha | Confianza |\n|---|---|---|---|---|---|---|---|---|---|")
     out = ["# Fase 5: tablas de la prueba en papel", "",
-           f"Alertas registradas: {len(todas)}. Apuesta simulada: 1 unidad a la cuota de Kambi (Paf) del momento "
-           "de la detección. Tu casa de apuestas puede pagar un poco menos, así que la ganancia real sería algo menor.", ""]
+           f"Alertas registradas: {len(todas)}. Apuesta simulada: 1 unidad a la cuota ESTIMADA en tu casa de apuestas "
+           "en el momento de la detección (o a la de Kambi si no había estimación).", ""]
 
     def bloque(titulo, clave):
         grupos = {}
@@ -192,7 +307,9 @@ def tablas_finales():
     bloque("Por deporte", lambda a: C.DEPORTES[a["deporte"]]["nombre"])
     bloque("Por tipo de error", lambda a: NOMBRE_REGLA.get(a["regla"], a["regla"]).split(":")[0] + f" ({a['regla']})")
     bloque("Jugadores contra el resto", lambda a: "Apuestas de jugadores" if a.get("jugador") else "Resto de apuestas")
-    bloque("Por rango de cuota", lambda a: "1.50-2.00" if a.get("en_rango") else ("menos de 1.50" if a["cuota"] < 1.5 else "más de 2.00"))
+    bloque("Por rango de cuota estimada en tu casa", lambda a: "sin estimación" if not a.get("cuota_rb") else
+           "1.50-2.00" if a.get("en_rango") else ("menos de 1.50" if a["cuota_rb"] < 1.5 else "más de 2.00"))
+    bloque("Merecían alerta (estimada 1.50-2.00 y sobre el justo)", lambda a: "merecía alerta" if a.get("avisable") else "solo registro")
     bloque("Solo las alcanzables (duraron 2 min o más)", lambda a: "alcanzable" if a.get("alcanzable") else "no alcanzable / abierta")
     bloque("Avisadas por Telegram", lambda a: "avisada" if a.get("avisado") else "solo registrada")
     ruta = C.DATA / "tablas.md"

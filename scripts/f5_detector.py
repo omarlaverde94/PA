@@ -111,7 +111,7 @@ def internos(filas, ev):
                     f"Las {len(fs)} opciones del mismo mercado suman {suma:.1%}: apostando a todas se ganaría siempre.",
                     "Kambi paga tanto por todas las opciones de este mercado que juntas suman menos de 100%. "
                     "Eso no puede pasar a propósito: una de las cuotas está mal, probablemente la que cambió última.",
-                    "alta"))
+                    "alta", {"ks_otros": [x["k"] for x in fs if x is not sospechosa]}))
 
     grupos = defaultdict(list)
     for f, g, d, t in props:
@@ -168,7 +168,7 @@ def internos(filas, ev):
                         f"Kambi paga más por \"{_dir_txt(d, t_facil)}\" que por \"{_dir_txt(d, t_dif)}\", "
                         f"que es más difícil de cumplir. Eso es imposible si los precios estuvieran bien: "
                         f"el precio justo tiene que ser menor a {dificil['odds']:.2f}.",
-                        "alta", {"cota": True}))
+                        "alta", {"cota": True, "k_ref": dificil["k"]}))
 
         # --- modelo de conteo (Poisson) a partir del más/menos principal
         stat = g[2]
@@ -195,34 +195,53 @@ def internos(filas, ev):
     return out
 
 
+def _indice_pinnacle(pin_props):
+    indice = defaultdict(list)
+    for p in pin_props or []:
+        indice[(p["stat"], p["per"], p["dir"], p["t"])].append(p)
+    return indice
+
+
+def _pinnacle_de(f, ev, pin_props, indice):
+    """La cuota de Pinnacle equivalente a una fila de Kambi, o None."""
+    if es_ganador(f):
+        lado = {"OT_ONE": "home", "OT_CROSS": "draw", "OT_TWO": "away"}.get(f["otype"])
+        # En deportes de EE. UU. Kambi a veces da ganador de 3 opciones: no se compara con 2 opciones
+        n_pin = len({p["dir"] for p in pin_props if p["stat"] == "ganador" and p["per"] == "full"})
+        cand = indice.get(("ganador", "full", lado, None), []) if n_pin == f["nsal"] else []
+    else:
+        prop = proposicion_kambi(f, ev)
+        if not prop:
+            return None
+        (evid, quien, stat, per), d, t = prop
+        cand = [p for p in indice.get((stat, per, d, t), [])
+                if p["quien"] == quien or (quien.startswith("j:") and p["quien"].startswith("j:")
+                                           and mismo_jugador(quien[2:], p["quien"][2:]))]
+    return cand[0] if cand else None
+
+
+def agregar_pinnacle(hallazgos, filas, ev, pin_props):
+    """Anota en cada hallazgo el precio justo de Pinnacle (si tiene esa apuesta)."""
+    indice = _indice_pinnacle(pin_props)
+    por_k = {f["k"]: f for f in filas}
+    for h in hallazgos:
+        f = por_k.get(h["k"])
+        p = _pinnacle_de(f, ev, pin_props, indice) if (f and pin_props) else None
+        h["pin_justa"] = round(1 / p["p"], 3) if p else None
+    return hallazgos
+
+
 def contra_mercado(filas, ev, pin_props):
     """Kambi contra el precio justo de Pinnacle."""
     if not pin_props:
         return []
-    indice = defaultdict(list)
-    for p in pin_props:
-        indice[(p["stat"], p["per"], p["dir"], p["t"])].append(p)
+    indice = _indice_pinnacle(pin_props)
     out = []
     for f in filas:
         if f["st"] != "OPEN" or f["odds"] > C.CUOTA_MAX_ALERTA:
             continue
-        cand = None
-        if es_ganador(f):
-            lado = {"OT_ONE": "home", "OT_CROSS": "draw", "OT_TWO": "away"}.get(f["otype"])
-            cand = [p for p in indice.get(("ganador", "full", lado, None), [])]
-            # En deportes de EE. UU. Kambi a veces da ganador de 3 opciones: no se compara con 2 opciones
-            n_pin = len({p["dir"] for p in pin_props if p["stat"] == "ganador" and p["per"] == "full"})
-            if n_pin != f["nsal"]:
-                cand = None
-        else:
-            prop = proposicion_kambi(f, ev)
-            if prop:
-                (evid, quien, stat, per), d, t = prop
-                cand = []
-                for p in indice.get((stat, per, d, t), []):
-                    if p["quien"] == quien or (quien.startswith("j:") and p["quien"].startswith("j:")
-                                               and mismo_jugador(quien[2:], p["quien"][2:])):
-                        cand.append(p)
+        p = _pinnacle_de(f, ev, pin_props, indice)
+        cand = [p] if p else None
         if not cand:
             continue
         p = cand[0]

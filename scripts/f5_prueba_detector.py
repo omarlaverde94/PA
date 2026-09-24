@@ -76,9 +76,44 @@ def caso_arbitraje():
     assert any(x["regla"] == "arbitraje" for x in h)
 
 
+def caso_estimacion():
+    """Cuota estimada en tu casa: solo merecen alerta las de 1.50-2.00 que siguen sobre el justo."""
+    import gzip
+    import json
+    import tempfile
+    from f5_estimacion import Estimador
+    tabla = {"*|*|*": {"razon": 0.99, "bajo": 0.97, "alto": 1.0, "n": 100},
+             "futbol|ganador|>6.00": {"razon": 0.9375, "bajo": 0.9, "alto": 1.0, "n": 100},
+             "nfl|totales|1.50-2.00": {"razon": 0.988, "bajo": 0.98, "alto": 0.995, "n": 100}}
+    ruta = tempfile.mktemp(suffix=".json.gz")
+    with gzip.open(ruta, "wt") as fh:
+        json.dump({"casa": "Casa de prueba", "tabla": tabla}, fh)
+    est = Estimador(ruta)
+    crit = "Total Points - Including Overtime"
+    over = fila(1, 30, crit, "Over/Under", "Over", 1.95, 45.5, None, "OT_OVER", 2)
+    justo_175 = {"k": 1, "regla": "mercado", "justa": 1.75}
+    r = est.evaluar(justo_175, {1: over}, "nfl")
+    print("NFL 1.95 contra justo 1.75:", r["cuota_rb"], r["ventaja_rb"], r["avisable"])
+    assert r["cuota_rb"] == 1.93 and r["avisable"] and r["casa"] == "Casa de prueba"
+    # Kambi 1.86 pasa el 6% (6.3%), pero en tu casa (1.84) ya no: no merece alerta
+    over2 = dict(over, odds=1.86)
+    r = est.evaluar(justo_175, {1: over2}, "nfl")
+    print("NFL 1.86 contra justo 1.75:", r["cuota_rb"], r["ventaja_rb"], r["avisable"])
+    assert not r["avisable"]
+    # Caso real Austria - Israel: Kambi 8.00, Pinnacle 6.98 -> tu casa ~7.50: fuera de 1.50-2.00
+    israel = fila(2, 40, "Full Time", "Match", "2", 8.0, None, "Israel", "OT_TWO", 3)
+    r = est.evaluar({"k": 2, "regla": "mercado", "justa": 6.98}, {2: israel}, "futbol")
+    print("Austria - Israel:", r["cuota_rb"], r["en_rango"], r["avisable"])
+    assert r["cuota_rb"] == 7.5 and not r["en_rango"] and not r["avisable"]
+    # Sin tabla no hay estimación ni alertas
+    sin = Estimador("/no/existe.json.gz")
+    assert not sin.ok and not sin.evaluar(justo_175, {1: over}, "nfl")["avisable"]
+
+
 if __name__ == "__main__":
     caso_touchdown()
     caso_escalera()
     caso_sin_error()
     caso_arbitraje()
+    caso_estimacion()
     print("Todas las pruebas pasaron.")
