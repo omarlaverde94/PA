@@ -12,7 +12,7 @@ hay estimación y el agente no envía alertas (solo registra).
 
 Con la estimación se decide si una señal merece alerta:
 - la cuota estimada en tu casa tiene que estar dentro del rango de alertas
-  (1.50 a 2.00), y
+  (por defecto 1.40 a 2.00; se cambia con el comando "rango"), y
 - tiene que seguir por encima del precio justo según la regla que la detectó.
 """
 import gzip

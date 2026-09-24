@@ -77,7 +77,8 @@ def caso_arbitraje():
 
 
 def caso_estimacion():
-    """Cuota estimada en tu casa: solo merecen alerta las de 1.50-2.00 que siguen sobre el justo."""
+    """Cuota estimada en tu casa: solo merecen alerta las del rango vigente (por defecto 1.40-2.00)
+    que siguen sobre el justo."""
     import gzip
     import json
     import tempfile
@@ -100,11 +101,16 @@ def caso_estimacion():
     r = est.evaluar(justo_175, {1: over2}, "nfl")
     print("NFL 1.86 contra justo 1.75:", r["cuota_rb"], r["ventaja_rb"], r["avisable"])
     assert not r["avisable"]
-    # Caso real Austria - Israel: Kambi 8.00, Pinnacle 6.98 -> tu casa ~7.50: fuera de 1.50-2.00
+    # Caso real Austria - Israel: Kambi 8.00, Pinnacle 6.98 -> tu casa ~7.50: fuera del rango
     israel = fila(2, 40, "Full Time", "Match", "2", 8.0, None, "Israel", "OT_TWO", 3)
     r = est.evaluar({"k": 2, "regla": "mercado", "justa": 6.98}, {2: israel}, "futbol")
     print("Austria - Israel:", r["cuota_rb"], r["en_rango"], r["avisable"])
     assert r["cuota_rb"] == 7.5 and not r["en_rango"] and not r["avisable"]
+    # 1.45 estimada: dentro del rango por defecto (1.40-2.00)
+    bajo = dict(over, odds=1.46)
+    r = est.evaluar({"k": 1, "regla": "mercado", "justa": 1.30}, {1: bajo}, "nfl")
+    print("NFL 1.46 contra justo 1.30:", r["cuota_rb"], r["avisable"])
+    assert r["cuota_rb"] == 1.45 and r["avisable"]
     # Sin tabla no hay estimación ni alertas
     sin = Estimador("/no/existe.json.gz")
     assert not sin.ok and not sin.evaluar(justo_175, {1: over}, "nfl")["avisable"]
