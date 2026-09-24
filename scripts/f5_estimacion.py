@@ -57,15 +57,24 @@ def grupo(f):
 class Estimador:
     def __init__(self, ruta=None):
         ruta = ruta or os.environ.get("F5_AJUSTE") or str(C.DATA / "ajuste_cuotas.json.gz")
-        self.tabla, self.casa, self.ok = {}, "tu casa de apuestas", False
+        self.tabla, self.casa, self.ok, self.enlace = {}, "tu casa de apuestas", False, None
         try:
             with gzip.open(ruta, "rt", encoding="utf-8") as fh:
                 d = json.load(fh)
             self.tabla = d["tabla"]
             self.casa = d.get("casa") or self.casa
+            enlace = d.get("enlace")
+            if isinstance(enlace, str) and enlace.startswith("https://") and "{id}" in enlace:
+                self.enlace = enlace
             self.ok = bool(self.tabla)
         except (OSError, ValueError, KeyError, EOFError):
             pass
+
+    def enlace_partido(self, evid):
+        """Enlace para abrir el partido en tu casa (mismo identificador de Kambi), o None."""
+        if not self.enlace or not str(evid).isdigit():
+            return None
+        return self.enlace.replace("{id}", str(int(evid)))
 
     def _fila(self, f, deporte):
         r = rango(f["odds"])

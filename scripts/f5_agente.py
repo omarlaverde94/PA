@@ -34,6 +34,7 @@ import f5_informe as INF
 import f5_telegram as T
 from f5_detector import agregar_pinnacle, contra_mercado, internos
 from f5_estimacion import Estimador
+from f5_tarjeta import tarjeta
 from f5_registro import Registro, ahora_iso, iso_a_ts
 
 GIT_REINTENTO_SEG = 300  # reintento del guardado cuando falla
@@ -42,6 +43,7 @@ CIERRE_GRACIA = 15 * 60  # un error que desaparece y vuelve antes de 15 min es e
 AYUDA = (
     "PRUEBA — no apostar\n\n"
     "Pedidos que entiendo (escríbelos tal cual):\n"
+    "• más (respondiendo a una alerta): la explicación completa de esa alerta.\n"
     "• estado: cómo va el agente.\n"
     "• resumen: el resumen del día ahora mismo, con la lista de posibles errores.\n"
     "• detalle: los posibles errores que siguen abiertos en este momento.\n"
@@ -60,7 +62,7 @@ NO_ENTENDI = "PRUEBA — no apostar\n\nNo es un pedido que yo conozca. Escribe \
 
 _DEPORTE = {"nfl": "nfl", "futbol americano": "nfl", "nba": "nba", "baloncesto": "nba",
             "mlb": "mlb", "beisbol": "mlb", "futbol": "futbol"}
-_FIJOS = {"ayuda": "ayuda", "start": "ayuda", "help": "ayuda", "estado": "estado", "resumen": "resumen",
+_FIJOS = {"mas": "mas", "ayuda": "ayuda", "start": "ayuda", "help": "ayuda", "estado": "estado", "resumen": "resumen",
           "detalle": "detalle",
           "pausa": "pausa", "seguir": "seguir", "todo": "todo", "todos": "todo",
           "apagar": "apagar", "encender": "encender"}
@@ -459,8 +461,17 @@ class Agente:
         if not enviar or len(self.avisos_hora) >= C.MAX_AVISOS_HORA:
             return
         enviar.sort(key=lambda a: -(a.get("ventaja_rb") or 0))
-        texto = INF.texto_alerta(info, enviar[:5], len(enviar))
-        if T.enviar(texto):
+        texto = "\n\n".join(INF.texto_corto(a) for a in enviar[:5])
+        if len(enviar) > 5:
+            texto += f"\n\n(+{len(enviar) - 5} más en este partido)"
+        imagen = tarjeta([INF.bloque_tarjeta(a) for a in enviar[:5]])
+        url = self.est.enlace_partido(info.get("id"))
+        boton = (f"Abrir en {self.est.casa}", url) if url else None
+        ids = T.enviar_alerta(texto, imagen, boton)
+        if ids:
+            for mid in ids:
+                self.reg.mensajes[str(mid)] = [a["id"] for a in enviar]
+            self.reg.mensajes["ultimo"] = [a["id"] for a in enviar]
             self.avisos_hora.append(ahora)
             for a in enviar:
                 a["avisado"] = True
@@ -473,14 +484,16 @@ class Agente:
         if time.time() - self.ultimo_pedido < 10 or not T.activo():
             return
         self.ultimo_pedido = time.time()
-        for chat, texto in self.pedidos.nuevos():
+        for chat, texto, responde_a in self.pedidos.nuevos():
             pedido = interpretar_pedido(texto)
             if pedido is None:
                 T.enviar(NO_ENTENDI, chat=chat)
                 continue
             cmd, deporte, solo_hoy = pedido
             self.log("pedido recibido:", cmd)  # solo el nombre del comando, nunca el texto
-            if cmd == "ayuda":
+            if cmd == "mas":
+                T.enviar(self.texto_mas(responde_a), chat=chat)
+            elif cmd == "ayuda":
                 T.enviar(AYUDA, chat=chat)
             elif cmd == "estado":
                 T.enviar(self.texto_estado(), chat=chat)
@@ -530,6 +543,23 @@ class Agente:
                     self.foco_hasta = None
                     T.enviar(f"PRUEBA — no apostar\nListo: solo aviso de {nombre} hasta que me escribas \"todo\".",
                              chat=chat)
+
+    def texto_mas(self, responde_a):
+        """La explicación completa de la alerta a la que se responde (o de la última)."""
+        ids = self.reg.mensajes.get(str(responde_a)) if responde_a else None
+        ids = ids or self.reg.mensajes.get("ultimo")
+        if not ids:
+            return "PRUEBA — no apostar\n\nNo encontré esa alerta. Responde \"más\" directamente a una alerta."
+        por_id = {a["id"]: a for a in self.reg.alertas_abiertas.values()}
+        faltan = [i for i in ids if i not in por_id]
+        if faltan:
+            por_id.update({a["id"]: a for a in INF.leer_alertas() if a["id"] in faltan})
+        alertas = [por_id[i] for i in ids if i in por_id]
+        if not alertas:
+            return "PRUEBA — no apostar\n\nEsa alerta ya no está en el registro de esta tanda."
+        a0 = alertas[0]
+        info = {"deporte": a0["deporte"], "nombre": a0["partido"], "liga": a0.get("liga", ""), "inicio": a0["inicio"]}
+        return INF.texto_alerta(info, alertas, len(alertas))
 
     # ------------------------------------------------------------------ apagado de emergencia
     def apagado(self):

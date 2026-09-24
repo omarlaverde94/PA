@@ -76,6 +76,7 @@ class Registro:
         self.cerrados = set()    # partidos que ya empezaron
         self.alertas_abiertas = {}
         self.avisados = {}       # clave -> hora del último aviso
+        self.mensajes = {}       # número de mensaje de Telegram -> ids de alertas (para "más")
         self.contador = {"cambios": 0, "nuevas": 0}
         self._cargar()
 
@@ -91,6 +92,7 @@ class Registro:
         self.cerrados = set(e.get("cerrados", []))
         self.alertas_abiertas = e.get("alertas_abiertas", {})
         self.avisados = e.get("avisados", {})
+        self.mensajes = e.get("mensajes", {})
 
     def guardar(self):
         for a in (self.catalogo, self.cambios, self.eventos_f, self.alertas_f):
@@ -103,6 +105,7 @@ class Registro:
         e = {"cuotas": self.cuotas, "eventos": self.eventos, "cerrados": sorted(self.cerrados),
              "alertas_abiertas": self.alertas_abiertas,
              "avisados": {k: v for k, v in self.avisados.items() if v > time.time() - 86400},
+             "mensajes": dict(list(self.mensajes.items())[-300:]),
              "guardado": ahora_iso()}
         tmp = self.dir / "estado.json.gz.tmp"
         with gzip.open(tmp, "wt", encoding="utf-8") as fh:
