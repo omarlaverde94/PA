@@ -1,0 +1,97 @@
+# Fase 5: agente de la prueba en papel, corriendo día y noche en GitHub Actions.
+#
+# - Cada tanda dura 5 h 45 min (GitHub corta a las 6 h). El horario lanza una
+#   tanda cada 30 min; como solo puede correr una a la vez, la siguiente espera
+#   en la fila y arranca apenas termina la anterior.
+# - Los datos (cuotas, alertas, estado) NO se guardan en este repositorio: se
+#   envían cada 30 min a la rama "datos-fase5" del repositorio de datos privado
+#   (secreto DATA_REPO), con el token del secreto PRIVATE_REPO_TOKEN. Si un
+#   envío falla, el agente avisa por Telegram y reintenta cada 5 min.
+# - Después de 7 días desde la primera corrida, el agente no hace nada más.
+#
+# Seguridad:
+# - Solo arranca por horario o a mano. NUNCA con pull requests ni en copias
+#   (forks) del repositorio, así que no corre código propuesto por otras personas.
+# - Permisos mínimos: este repositorio solo se lee.
+# - Herramientas fijas: acciones fijadas por SHA completo, Ubuntu y Python con
+#   versión exacta y paquetes de Python con huella verificada.
+# - Claves solo como secretos: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_REPO
+#   y PRIVATE_REPO_TOKEN. Nunca en este archivo ni en los registros.
+#
+# Esta tarea existe igual en las dos copias del código; la única diferencia
+# permitida es el bloque "schedule" (en la copia maestra está apagado).
+name: Fase 5 - agente prueba en papel
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fase5-agente
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  agente:
+    # Nunca en copias (forks) del repositorio.
+    if: github.repository_owner == 'omarlaverde94'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 358
+    permissions:
+      contents: read
+    steps:
+      - name: Bajar el código (sin guardar credenciales)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: main
+          path: codigo
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11.13"
+
+      - name: Instalar dependencias (versiones fijas y verificadas)
+        run: "pip install --quiet --only-binary=:all: --require-hashes -r codigo/scripts/requirements-fase5.txt"
+
+      - name: Comprobar que los datos van a un repositorio privado
+        env:
+          DATA_REPO: ${{ secrets.DATA_REPO }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: python codigo/scripts/f5_probar_guardado.py verificar
+
+      - name: Bajar el repositorio de datos
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: datos
+          fetch-depth: 1
+          sparse-checkout: data/fase5
+
+      - name: Pasar a la rama datos-fase5 (o crearla)
+        working-directory: datos
+        run: |
+          git config user.name "agente-fase5"
+          git config user.email "agente-fase5@users.noreply.github.com"
+          if git fetch --quiet --depth 1 origin datos-fase5 >/dev/null 2>&1; then
+            git checkout --quiet -B datos-fase5 FETCH_HEAD
+          else
+            git checkout --quiet -b datos-fase5
+            # Primera tanda: los 7 días empiezan a contar ahora.
+            rm -f data/fase5/inicio_prueba.txt data/fase5/fin_avisado.txt
+          fi
+
+      - name: Correr el agente (5 h 45 min)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          F5_DATA: ${{ github.workspace }}/datos/data/fase5
+          F5_GIT_DIR: ${{ github.workspace }}/datos
+          F5_GIT_CADA: "1800"
+          F5_DURACION: "20700"
+          F5_SIN_SALUDO: "1"
+        run: python codigo/scripts/f5_agente.py
