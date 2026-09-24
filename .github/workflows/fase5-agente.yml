@@ -4,7 +4,7 @@
 #   tanda cada 30 min; como solo puede correr una a la vez, la siguiente espera
 #   en la fila y arranca apenas termina la anterior.
 # - Los datos (cuotas, alertas, estado) NO se guardan en este repositorio: se
-#   envían cada 30 min a la rama "datos-fase5" del repositorio de datos privado
+#   envían cada 10 min (y enseguida tras cada alerta) a la rama "datos-fase5" del repositorio de datos privado
 #   (secreto DATA_REPO), con el token del secreto PRIVATE_REPO_TOKEN. Si un
 #   envío falla, el agente avisa por Telegram y reintenta cada 5 min.
 # - La tabla para estimar la cuota de tu casa se lee del repositorio privado
@@ -95,7 +95,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           F5_DATA: ${{ github.workspace }}/datos/data/fase5
           F5_GIT_DIR: ${{ github.workspace }}/datos
-          F5_GIT_CADA: "1800"
+          F5_GIT_CADA: "600"
           F5_DURACION: "20700"
           F5_SIN_SALUDO: "1"
           F5_AJUSTE: ${{ runner.temp }}/ajuste_cuotas.json.gz
