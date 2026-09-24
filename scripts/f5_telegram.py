@@ -113,6 +113,20 @@ def _es_autorizado(m, autorizados):
             and str(remitente.get("id", "")) == cid and cid in autorizados)
 
 
+def _respondido(r):
+    """
+    Datos del mensaje al que se responde (para "más"): su número, su fecha y,
+    solo si lo escribió este mismo bot, su texto. Se usan en memoria para
+    encontrar la alerta; nunca se imprimen ni se guardan.
+    """
+    if not r:
+        return None
+    de = r.get("from") or {}
+    propio = bool(_TOKEN) and de.get("is_bot") and str(de.get("id", "")) == _TOKEN.split(":")[0]
+    return {"id": r.get("message_id"), "fecha": r.get("date"),
+            "texto": (r.get("text") or r.get("caption") or "") if propio else ""}
+
+
 class Pedidos:
     """Lee los mensajes nuevos que le escriben al bot. Solo devuelve los del
     chat autorizado; los de cualquier otra persona se descartan sin responder."""
@@ -136,9 +150,7 @@ class Pedidos:
                 self.ignorados += 1
                 continue
             if texto:
-                # A qué mensaje responde (para "más"); solo el número, nunca el texto
-                resp = (m.get("reply_to_message") or {}).get("message_id")
-                salida.append((str(m["chat"]["id"]), texto, resp))
+                salida.append((str(m["chat"]["id"]), texto, _respondido(m.get("reply_to_message"))))
         return salida
 
 

@@ -478,6 +478,9 @@ class Agente:
                 a["avisado_ts"] = ahora
                 self.reg.avisados[a["clave"]] = ahora
             self.log(f"aviso enviado: {info['nombre']} ({len(enviar)} apuestas)")
+            # Guardar y subir los datos enseguida: así ninguna alerta avisada se pierde si la tanda se corta
+            self.ultimo_guardado = 0
+            self.ultimo_git = 0
 
     # ------------------------------------------------------------------ pedidos
     def atender_pedidos(self):
@@ -545,18 +548,28 @@ class Agente:
                              chat=chat)
 
     def texto_mas(self, responde_a):
-        """La explicación completa de la alerta a la que se responde (o de la última)."""
-        ids = self.reg.mensajes.get(str(responde_a)) if responde_a else None
-        ids = ids or self.reg.mensajes.get("ultimo")
-        if not ids:
-            return "PRUEBA — no apostar\n\nNo encontré esa alerta. Responde \"más\" directamente a una alerta."
-        por_id = {a["id"]: a for a in self.reg.alertas_abiertas.values()}
-        faltan = [i for i in ids if i not in por_id]
-        if faltan:
-            por_id.update({a["id"]: a for a in INF.leer_alertas() if a["id"] in faltan})
-        alertas = [por_id[i] for i in ids if i in por_id]
-        if not alertas:
-            return "PRUEBA — no apostar\n\nEsa alerta ya no está en el registro de esta tanda."
+        """
+        La explicación completa de la alerta a la que se responde (o de la última).
+        Busca primero por el número del mensaje; si la alerta es anterior a que se
+        guardaran esos números, la reconoce por el partido y la apuesta del texto.
+        """
+        self.reg.alertas_f.volcar()  # que el archivo tenga también lo más reciente
+        todas = {a["id"]: a for a in INF.leer_alertas()}
+        todas.update({a["id"]: a for a in self.reg.alertas_abiertas.values()})
+        alertas = []
+        if responde_a:
+            ids = self.reg.mensajes.get(str(responde_a.get("id"))) or []
+            alertas = [todas[i] for i in ids if i in todas]
+            if not alertas:
+                alertas = INF.buscar_por_texto(list(todas.values()), responde_a.get("texto"), responde_a.get("fecha"))
+            if not alertas:
+                return ("PRUEBA — no apostar\n\nNo encontré esa alerta en el registro. Puede ser de una tanda "
+                        "cuyos datos no alcanzaron a guardarse. Escribe \"más\" solo para ver la última alerta.")
+        else:
+            ids = self.reg.mensajes.get("ultimo") or []
+            alertas = [todas[i] for i in ids if i in todas] or INF.ultimas_avisadas(list(todas.values()))
+            if not alertas:
+                return "PRUEBA — no apostar\n\nTodavía no hay alertas enviadas en el registro."
         a0 = alertas[0]
         info = {"deporte": a0["deporte"], "nombre": a0["partido"], "liga": a0.get("liga", ""), "inicio": a0["inicio"]}
         return INF.texto_alerta(info, alertas, len(alertas))

@@ -85,11 +85,13 @@ def falso_llamar(metodo, datos=None, timeout=40, archivos=None):
 T._llamar = falso_llamar
 
 
-def msg(uid, chat, tipo, texto, bot=False, responde_a=None):
+def msg(uid, chat, tipo, texto, bot=False, responde_a=None, texto_respondido=None):
     m = {"chat": {"id": int(chat), "type": tipo},
          "from": {"id": int(chat) if tipo == "private" else 1, "is_bot": bot}, "text": texto}
     if responde_a:
-        m["reply_to_message"] = {"message_id": responde_a}
+        # El mensaje respondido lo escribió este bot (su número es la parte del token antes de ":")
+        m["reply_to_message"] = {"message_id": responde_a, "date": 0, "text": texto_respondido or "",
+                                 "from": {"id": TOKEN.split(":")[0], "is_bot": True}}
     return {"update_id": uid, "message": m}
 
 
@@ -185,6 +187,24 @@ with contextlib.redirect_stdout(salida):
     ag.ultimo_pedido = 0
     ag.atender_pedidos()
     assert "Explicación: e" in enviados[-1][1] and enviados[-1][0] == MI_CHAT
+    # Alerta vieja (sin número de mensaje guardado): se reconoce por el partido y la apuesta del texto
+    ag.reg.mensajes.clear()
+    viejo = "PRUEBA — no apostar\n\nPartido: Equipo A - Equipo B\n\n1) Apuesta: Más de 45.5\n• Cuota: 1.95"
+    cola[:] = [msg(32, MI_CHAT, "private", "más", responde_a=77, texto_respondido=viejo)]
+    ag.ultimo_pedido = 0
+    ag.atender_pedidos()
+    assert "Explicación: e" in enviados[-1][1], "más no encontró una alerta vieja por su texto"
+    # "más" solo, sin números guardados: la última alerta avisada del registro
+    ag.reg.alertas_abiertas["mercado:1"]["avisado"] = True
+    cola[:] = [msg(33, MI_CHAT, "private", "más")]
+    ag.ultimo_pedido = 0
+    ag.atender_pedidos()
+    assert "Explicación: e" in enviados[-1][1], "más solo no encontró la última alerta"
+    # Respuesta a un mensaje que no es una alerta: no inventa otra
+    cola[:] = [msg(34, MI_CHAT, "private", "más", responde_a=78, texto_respondido="hola")]
+    ag.ultimo_pedido = 0
+    ag.atender_pedidos()
+    assert "No encontré esa alerta" in enviados[-1][1]
     # un enlace que no sea https no se usa
     assert T.enviar_alerta("x", None, ("b", "javascript:alert(1)")) and botones[-1] is None
     ag.reg.alertas_abiertas.clear()

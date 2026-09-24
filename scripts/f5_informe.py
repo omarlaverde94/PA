@@ -37,33 +37,49 @@ def hora_col(iso):
 
 
 def texto_alerta(info, alertas, total):
-    dep = C.DEPORTES[info["deporte"]]
+    """Explicación completa (la que se manda con "más"). Sirve también para alertas
+    viejas, anteriores a la cuota estimada en tu casa."""
+    dep = C.DEPORTES.get(info["deporte"], {"emoji": ""})
     ini = hora_col(info["inicio"])
     casa = alertas[0].get("casa") or "tu casa de apuestas"
     lineas = ["PRUEBA — no apostar", "",
               f"{dep['emoji']} Partido: {info['nombre']}",
-              f"Liga: {info['liga']} · empieza {ini.strftime('%d/%m %H:%M')} (hora local)"]
+              f"Liga: {info.get('liga') or '—'} · empieza {ini.strftime('%d/%m %H:%M')} (hora local)"]
     for i, a in enumerate(alertas, 1):
         cota = "menos de " if a.get("cota") or a["regla"] == "escalera" else ""
-        justa = f"{cota}{a['justa_rb']:.2f}" if a.get("justa_rb") else "—"
+        justa_v = a.get("justa_rb") or a.get("justa")
+        justa = f"{cota}{justa_v:.2f}" if justa_v else "—"
         rango80 = a.get("rango_rb") or [None, None]
+        if a.get("cuota_rb"):
+            estimada = (f"• Cuota estimada en {casa}: {a['cuota_rb']:.2f}"
+                        + (f" (normalmente entre {rango80[0]:.2f} y {rango80[1]:.2f})" if rango80[0] else ""))
+        else:
+            estimada = f"• Cuota estimada en {casa}: sin estimación (alerta anterior a ese cálculo)"
+        if a.get("ventaja_rb") is not None:
+            ventaja = f"• Ventaja con la cuota estimada en {casa}: {a['ventaja_rb']:+.1%}"
+        elif a.get("ventaja") is not None and not a.get("cota"):
+            ventaja = f"• Ventaja con la cuota de Kambi: {a['ventaja']:+.1%}"
+        else:
+            ventaja = "• Ventaja: sin dato"
+        explicacion = a.get("explicacion", "")
+        if a.get("cuota_rb") and a.get("avisable"):
+            explicacion += f" Con la cuota estimada en {casa} ({a['cuota_rb']:.2f}) la apuesta sigue por encima del precio justo."
         lineas += [
             "",
             f"{i}) Apuesta: {a['apuesta']}" + (" [jugador]" if a.get("jugador") else ""),
-            f"• Cuota estimada en {casa}: {a['cuota_rb']:.2f}"
-            + (f" (normalmente entre {rango80[0]:.2f} y {rango80[1]:.2f})" if rango80[0] else ""),
+            estimada,
             f"• Cuota en Kambi (Paf): {a['cuota']:.2f}" + (f" · Unibet: {a['cuota_unibet']:.2f}" if a.get("cuota_unibet") else ""),
             f"• Precio justo: {justa} ({ORIGEN_JUSTO.get(a['regla'], 'estimado')})"
             + (f" · Pinnacle: {a['pin_justa']:.2f}" if a.get("pin_justa") and a["regla"] != "mercado" else ""),
-            f"• Ventaja con la cuota estimada en {casa}: {a['ventaja_rb']:+.1%}" if a.get("ventaja_rb") is not None else
-            f"• Ventaja con la cuota estimada en {casa}: sin dato",
+            ventaja,
             f"• Tipo de error: {NOMBRE_REGLA.get(a['regla'], a['regla'])}",
-            f"• Respaldo: {a['respaldo']}",
-            f"• Confianza: {a['confianza']}",
+            f"• Respaldo: {a.get('respaldo', '—')}",
+            f"• Confianza: {a.get('confianza', '—')}",
             f"• Detectado: {hora_col(a.get('avisable_desde') or a['detectado']).strftime('%d/%m %H:%M:%S')} (hora local)",
-            f"• Explicación: {a['explicacion']} Con la cuota estimada en {casa} ({a['cuota_rb']:.2f}) "
-            f"la apuesta sigue por encima del precio justo.",
+            f"• Explicación: {explicacion}",
         ]
+        if a.get("cerrada"):
+            lineas.append(f"• Ahora: {_estado(a)}")
     if total > len(alertas):
         lineas += ["", f"(Hay {total - len(alertas)} apuestas más con el mismo tipo de señal en este partido; quedan en el registro.)"]
     lineas += ["", recordatorio(casa)]
@@ -248,6 +264,45 @@ def lista_errores(alertas, res):
     if len(ordenadas) > MAX_LISTA:
         lineas.append(f"… y {len(ordenadas) - MAX_LISTA} más (los más débiles), en el registro.")
     return lineas
+
+
+def _hora_aviso(a):
+    return a.get("avisado_ts") or a.get("detectado_ts") or 0
+
+
+def _grupo_de(mejor, candidatas):
+    """Las alertas del mismo partido enviadas en el mismo mensaje (a menos de 2 min)."""
+    ref, vistas, grupo = _hora_aviso(mejor), set(), []
+    for a in sorted(candidatas, key=lambda x: -(x.get("ventaja_rb") or x.get("ventaja") or 0)):
+        if a["partido"] == mejor["partido"] and abs(_hora_aviso(a) - ref) < 120 and a["id"] not in vistas:
+            vistas.add(a["id"])
+            grupo.append(a)
+    return grupo
+
+
+def buscar_por_texto(alertas, texto, fecha=None):
+    """
+    Encuentra las alertas de un mensaje del bot a partir de su texto (sirve para
+    alertas enviadas antes de que se guardara el número de cada mensaje): el
+    partido y la apuesta aparecen tal cual en el texto, en el formato viejo y en
+    el corto. Si hay varias, la avisada más cercana a la fecha del mensaje.
+    """
+    if not texto:
+        return []
+    cand = [a for a in alertas if a.get("partido") and a.get("apuesta")
+            and a["partido"] in texto and a["apuesta"] in texto]
+    if not cand:
+        return []
+    mejor = min(cand, key=lambda a: (not a.get("avisado"), abs((fecha or _hora_aviso(a)) - _hora_aviso(a))))
+    return _grupo_de(mejor, cand)
+
+
+def ultimas_avisadas(alertas):
+    """Las alertas del último aviso enviado."""
+    avisadas = [a for a in alertas if a.get("avisado") and a.get("partido")]
+    if not avisadas:
+        return []
+    return _grupo_de(max(avisadas, key=_hora_aviso), avisadas)
 
 
 def detalle_abiertos(reg):
