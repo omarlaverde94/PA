@@ -34,7 +34,8 @@ import f5_telegram as T  # noqa: E402
 aceptados = {
     "estado": ("estado", None, False), "/estado": ("estado", None, False), "Resumen": ("resumen", None, False),
     "pausa": ("pausa", None, False), "seguir": ("seguir", None, False), "todo": ("todo", None, False),
-    "ayuda": ("ayuda", None, False), "apagar": ("apagar", None, False), "encender": ("encender", None, False),
+    "ayuda": ("ayuda", None, False), "detalle": ("detalle", None, False), "Detalle.": ("detalle", None, False),
+    "apagar": ("apagar", None, False), "encender": ("encender", None, False),
     "solo NFL": ("foco", "nfl", False), "hoy solo fútbol": ("foco", "futbol", True),
     "hoy enfócate solo en NFL": ("foco", "nfl", True), "solo mlb hoy": ("foco", "mlb", True),
 }
@@ -96,6 +97,27 @@ with contextlib.redirect_stdout(salida):
     ag.atender_pedidos()
     assert not ag.apagado(), "encender no funcionó"
     ag.reg.guardar()
+
+    # "detalle" y el resumen listan los posibles errores (máximo 15, los más fuertes)
+    import f5_informe as INF
+    ahora = A.ahora_iso()
+    for n in range(20):
+        ag.reg.alertas_abiertas[f"par:{n}"] = {
+            "id": f"x-{n}", "clave": f"par:{n}", "k": n, "ev": 1, "deporte": "nfl", "partido": "Equipo A - Equipo B",
+            "inicio": "2099-01-01T00:00:00Z", "apuesta": f"Apuesta {n}", "cuota": 2.0, "justa": 2.0 / (1 + n / 100),
+            "pin_justa": (2.0 / (1 + n / 100)) if n % 2 else None, "regla": "par", "tipo": "interno",
+            "detectado": ahora, "detectado_ts": 0, "ventaja": n / 100, "avisado": n < 3}
+    cola[:] = [msg(11, MI_CHAT, "private", "detalle")]
+    ag.ultimo_pedido = 0
+    ag.atender_pedidos()
+    det = enviados[-1][1]
+    assert "Posibles errores abiertos ahora: 20" in det and "19) " not in det and "15) " in det
+    assert "y 5 más" in det and det.index("Apuesta 19") < det.index("Apuesta 18"), "orden o tope de 15 incorrecto"
+    assert "Pinnacle justo" in det and "Pinnacle: no tiene esta apuesta" in det
+    res = INF.resumen_diario(ag.reg, A.col().date())
+    assert "Cada posible error del día" in res and "y 5 más" in res and "sin aviso" in res
+    ag.reg.alertas_abiertas.clear()
+print("Resumen y \"detalle\" listan los errores (15 más fuertes y cuántos faltan): OK")
 
 destinos = {c for c, _ in enviados}
 assert destinos == {MI_CHAT}, f"se envió a un chat no autorizado: {destinos}"

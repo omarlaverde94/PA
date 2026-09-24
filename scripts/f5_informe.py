@@ -5,6 +5,7 @@ registro de alertas para los resúmenes y el informe final.
 import gzip
 import json
 import statistics
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
@@ -140,9 +141,93 @@ def resumen_diario(reg, dia):
                           f"ganancia apostando 1 unidad en cada una: {ganancia:+.1f} unidades.")
         else:
             lineas.append("• Resultados: todavía no hay partidos terminados con resultado para estas alertas.")
-        lineas += ["", "Con tan pocos datos de un solo día, nada de esto demuestra ganancia ni pérdida."]
+        lineas += ["", "Con tan pocos datos de un solo día, nada de esto demuestra ganancia ni pérdida.",
+                   "", "Cada posible error del día, del más fuerte al más débil (con o sin aviso):", ""]
+        lineas += ["\n\n".join(lista_errores(del_dia, res))]
     lineas += ["", RECORDATORIO]
     return "\n".join(lineas)
+
+
+# ---------------------------------------------------------------------------- lista de errores
+MAX_LISTA = 15
+
+
+def _pin(a):
+    """Precio justo de Pinnacle de una alerta (las viejas solo lo tienen en las de mercado)."""
+    if a.get("pin_justa"):
+        return a["pin_justa"]
+    return a.get("justa") if a.get("regla") == "mercado" else None
+
+
+def fuerza(a):
+    """Diferencia de la cuota de Kambi contra Pinnacle (o contra el precio estimado)."""
+    ref = _pin(a) or a.get("justa")
+    return a["cuota"] / ref - 1 if ref else (a.get("ventaja") or 0)
+
+
+def _estado(a):
+    if a.get("cerrada"):
+        if a.get("motivo") == "empezó el partido":
+            return "no se corrigió antes del inicio del partido"
+        return f"corregido a los {_dur(a.get('duracion_seg'))} ({a.get('motivo', 'cuota corregida')})"
+    if a.get("ausente_desde"):
+        return "parece corregido (confirmando)"
+    return "sigue abierto"
+
+
+def _resultado(a, res):
+    r = res.get(a["id"])
+    if r and r.get("gana") is not None:
+        return f"se habría {'GANADO' if r['gana'] else 'perdido'} ({r['unidades']:+.2f} u)"
+    if r:
+        return "sin resultado (" + r.get("detalle", "no disponible") + ")"
+    try:
+        inicio = datetime.strptime(a["inicio"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (KeyError, ValueError):
+        return "resultado pendiente"
+    if time.time() < inicio:
+        return "el partido no ha empezado"
+    if time.time() < inicio + 5 * 3600:
+        return "partido en juego o recién terminado"
+    return "partido terminado, resultado pendiente"
+
+
+def texto_error(i, a, res):
+    dep = C.DEPORTES.get(a.get("deporte"), {})
+    pin = _pin(a)
+    dif = fuerza(a)
+    if pin:
+        precio = f"Pinnacle justo {pin:.2f} · diferencia {dif:+.1%}"
+    else:
+        est = a.get("justa")
+        cota = "menos de " if a.get("cota") else ""
+        precio = (f"Pinnacle: no tiene esta apuesta · justo estimado {cota}{est:.2f} (contradicción interna) · "
+                  f"diferencia {dif:+.1%}") if est else "Pinnacle: no tiene esta apuesta"
+    return "\n".join([
+        f"{i}) {dep.get('emoji', '')} {a.get('partido', '')} · empieza {hora_col(a['inicio']).strftime('%d/%m %H:%M')}",
+        f"   Apuesta: {a.get('apuesta', '')}" + (" [jugador]" if a.get("jugador") else ""),
+        f"   Kambi {a['cuota']:.2f} · {precio}",
+        f"   {_estado(a)} · {_resultado(a, res)}" + (" · avisado" if a.get("avisado") else " · sin aviso"),
+    ])
+
+
+def lista_errores(alertas, res):
+    """Los errores ordenados del más fuerte al más débil, como máximo 15."""
+    orden = sorted(alertas, key=fuerza, reverse=True)
+    lineas = [texto_error(i, a, res) for i, a in enumerate(orden[:MAX_LISTA], 1)]
+    if len(orden) > MAX_LISTA:
+        lineas.append(f"… y {len(orden) - MAX_LISTA} más (los más débiles), que quedan en el registro.")
+    return lineas
+
+
+def detalle_abiertos(reg):
+    """Para el comando "detalle": los posibles errores que siguen abiertos ahora."""
+    abiertos = list(reg.alertas_abiertas.values())
+    partes = ["PRUEBA — no apostar", f"Posibles errores abiertos ahora: {len(abiertos)}"]
+    if abiertos:
+        partes += ["Del más fuerte al más débil:"] + lista_errores(abiertos, leer_resultados())
+    partes.append(RECORDATORIO)
+    return "\n\n".join(partes)
 
 
 # ---------------------------------------------------------------------------- informe final

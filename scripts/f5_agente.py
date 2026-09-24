@@ -32,7 +32,7 @@ import f5_config as C
 import f5_fuentes as F
 import f5_informe as INF
 import f5_telegram as T
-from f5_detector import contra_mercado, internos
+from f5_detector import agregar_pinnacle, contra_mercado, internos
 from f5_registro import Registro, ahora_iso, iso_a_ts
 
 GIT_REINTENTO_SEG = 300  # reintento del guardado cuando falla
@@ -42,7 +42,8 @@ AYUDA = (
     "PRUEBA — no apostar\n\n"
     "Pedidos que entiendo (escríbelos tal cual):\n"
     "• estado: cómo va el agente.\n"
-    "• resumen: el resumen del día ahora mismo.\n"
+    "• resumen: el resumen del día ahora mismo, con la lista de posibles errores.\n"
+    "• detalle: los posibles errores que siguen abiertos en este momento.\n"
     "• solo NFL (o NBA, MLB, fútbol): avisar solo de ese deporte. \"hoy solo NFL\" o "
     "\"hoy enfócate solo en NFL\" vale hasta la medianoche.\n"
     "• todo: volver a avisar de todos los deportes.\n"
@@ -57,6 +58,7 @@ NO_ENTENDI = "PRUEBA — no apostar\n\nNo es un pedido que yo conozca. Escribe \
 _DEPORTE = {"nfl": "nfl", "futbol americano": "nfl", "nba": "nba", "baloncesto": "nba",
             "mlb": "mlb", "beisbol": "mlb", "futbol": "futbol"}
 _FIJOS = {"ayuda": "ayuda", "start": "ayuda", "help": "ayuda", "estado": "estado", "resumen": "resumen",
+          "detalle": "detalle",
           "pausa": "pausa", "seguir": "seguir", "todo": "todo", "todos": "todo",
           "apagar": "apagar", "encender": "encender"}
 _RE_FOCO = re.compile(r"^(hoy\s+)?(?:(enfocate)\s+)?(?:(solo)\s+)?(?:en\s+)?(?:el\s+)?"
@@ -337,7 +339,8 @@ class Agente:
         if not info or not filas or self.reg.empezo(evid):
             return
         props, hora_pin = self.props_pinnacle(evid)
-        hallazgos = internos(filas, info) + contra_mercado(filas, info, props)
+        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
+                                     filas, info, props)
         vistos = {h["clave"] for h in hallazgos}
         ahora = time.time()
         por_k = {f["k"]: f for f in filas}
@@ -461,6 +464,8 @@ class Agente:
                 T.enviar("PRUEBA — no apostar\n\nEl agente está APAGADO. Escribe \"encender\" para prenderlo.", chat=chat)
             elif cmd == "resumen":
                 T.enviar(INF.resumen_diario(self.reg, col().date()), chat=chat)
+            elif cmd == "detalle":
+                T.enviar(INF.detalle_abiertos(self.reg), chat=chat)
             elif cmd == "pausa":
                 self.pausa = True
                 T.enviar("PRUEBA — no apostar\nListo: dejo de avisar (sigo registrando). Escribe \"seguir\" para volver.", chat=chat)
