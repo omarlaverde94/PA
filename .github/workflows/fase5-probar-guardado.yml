@@ -1,0 +1,51 @@
+# Fase 5: prueba, a mano, de que el agente puede guardar los datos en el
+# repositorio privado (secretos DATA_REPO y PRIVATE_REPO_TOKEN). Sube una rama
+# de prueba vacía, la borra y avisa el resultado por Telegram. Correrla antes
+# de arrancar el agente y cada vez que se cambie el token.
+name: Fase 5 - probar guardado de datos
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probar:
+    if: github.repository_owner == 'omarlaverde94'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: main
+          path: codigo
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11.13"
+      - run: "pip install --quiet --only-binary=:all: --require-hashes -r codigo/scripts/requirements-fase5.txt"
+      - name: Comprobar secretos y que el repositorio de datos sea privado
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DATA_REPO: ${{ secrets.DATA_REPO }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: python codigo/scripts/f5_probar_guardado.py verificar
+      - name: Bajar el repositorio de datos
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: datos
+          fetch-depth: 1
+          sparse-checkout: data/fase5
+      - name: Subir y borrar una rama de prueba
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DATA_REPO: ${{ secrets.DATA_REPO }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: python codigo/scripts/f5_probar_guardado.py probar datos

@@ -1,0 +1,34 @@
+# Fase 5: ayuda de una sola vez para saber tu número de chat de Telegram.
+# Correrlo a mano (Actions -> "Fase 5 - mi número de chat" -> Run workflow) y,
+# mientras corre (10 min), escribirle "hola" al bot: le responde SOLO al primer
+# chat privado que escriba (con su propio número) y se apaga.
+# Guárdalo como secreto TELEGRAM_CHAT_ID. Con ese secreto puesto, no hace nada.
+# Seguridad: solo arranca a mano, sin permisos de escritura y con herramientas fijas.
+name: Fase 5 - mi número de chat
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  mi-chat:
+    if: github.repository_owner == 'omarlaverde94'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11.13"
+      - run: "pip install --quiet --only-binary=:all: --require-hashes -r scripts/requirements-fase5.txt"
+      - name: Esperar un "hola" al bot durante 10 minutos
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/f5_telegram.py mi_chat 10
