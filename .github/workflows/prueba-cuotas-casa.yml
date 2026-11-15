@@ -1,0 +1,139 @@
+# Prueba separada (no es el agente): ¿se pueden leer las cuotas de la casa
+# desde GitHub Actions y coinciden con lo que muestra su página pública?
+#
+# - Solo se ejecuta a mano (pestaña Actions → "Prueba cuotas casa" → Run workflow).
+#   No tiene horario.
+# - Lee unos 10 partidos próximos de la API pública de cuotas de la casa, abre la
+#   página pública de 3 de ellos con un navegador sin ventana (sin iniciar sesión,
+#   sin credenciales) y compara las cuotas.
+# - Las direcciones de la API y de la página NO están en el código: se leen de los
+#   secretos CASA_API_URL y CASA_PAGINA_URL. La rama donde se guardan los
+#   resultados se lee del secreto CASA_RAMA.
+# - El informe y las capturas NO se guardan en este repositorio ni como
+#   "artifact": van a esa rama del repositorio de datos privado (secreto
+#   DATA_REPO), con el token del secreto PRIVATE_REPO_TOKEN. Nunca toca main
+#   ni la rama datos-fase5.
+# - Los registros solo muestran conteos (sin equipos, cuotas, direcciones ni claves).
+# - Al final envía un resumen corto por Telegram.
+#
+# Seguridad: nunca corre con pull requests ni en copias (forks); permisos
+# mínimos; acciones fijadas por SHA; paquetes de Python con huella verificada;
+# el token del repositorio privado solo se usa después de que el navegador terminó.
+name: Prueba cuotas casa
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: prueba-cuotas-casa
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prueba:
+    if: github.repository_owner == 'omarlaverde94'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      SALIDA: ${{ github.workspace }}/salida
+    steps:
+      - name: Bajar el código (sin guardar credenciales)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          ref: main
+          path: codigo
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.11.13"
+
+      - name: Instalar dependencias (versiones fijas y verificadas) y el navegador
+        run: |
+          pip install --quiet --only-binary=:all: --require-hashes -r codigo/scripts/requirements-fase5.txt
+          pip install --quiet --only-binary=:all: --require-hashes -r codigo/scripts/requirements-prueba-casa.txt
+          python -m playwright install --with-deps chromium > /dev/null
+
+      - name: Comprobar que los resultados van a un repositorio privado
+        id: verificar
+        env:
+          DATA_REPO: ${{ secrets.DATA_REPO }}
+          PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          CASA_RAMA: ${{ secrets.CASA_RAMA }}
+        run: |
+          python codigo/scripts/f5_probar_guardado.py verificar
+          # La rama de resultados: solo letras minúsculas, números y guiones; nunca main ni datos-fase5.
+          if ! [[ "$CASA_RAMA" =~ ^[a-z0-9][a-z0-9-]{2,40}$ ]] || [ "$CASA_RAMA" = "main" ] || [ "$CASA_RAMA" = "datos-fase5" ]; then
+            echo "FALLÓ: falta el secreto CASA_RAMA o no es válido"; exit 1
+          fi
+
+      - name: Leer cuotas de la API y tomar capturas (sin iniciar sesión)
+        id: prueba
+        continue-on-error: true
+        env:
+          CASA_API_URL: ${{ secrets.CASA_API_URL }}
+          CASA_PAGINA_URL: ${{ secrets.CASA_PAGINA_URL }}
+        run: python codigo/scripts/prueba_cuotas_casa.py "$SALIDA"
+
+      - name: Bajar el repositorio privado (solo la carpeta de esta prueba)
+        id: bajar
+        # Solo si se comprobó que el repositorio de datos es privado.
+        if: always() && steps.verificar.outcome == 'success'
+        continue-on-error: true
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          repository: ${{ secrets.DATA_REPO }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          ref: main
+          path: datos
+          fetch-depth: 1
+          sparse-checkout: informes/${{ secrets.CASA_RAMA }}
+
+      - name: Guardar informe y capturas en la rama de resultados (repositorio privado)
+        id: guardar
+        if: always() && steps.bajar.outcome == 'success'
+        continue-on-error: true
+        working-directory: datos
+        env:
+          CASA_RAMA: ${{ secrets.CASA_RAMA }}
+        run: |
+          if [ ! -f "$SALIDA/informe.md" ]; then echo "No hay informe para guardar."; exit 1; fi
+          git config user.name "prueba-cuotas"
+          git config user.email "prueba-cuotas@users.noreply.github.com"
+          if git fetch --quiet --depth 1 origin "$CASA_RAMA" >/dev/null 2>&1; then
+            git checkout --quiet -B "$CASA_RAMA" FETCH_HEAD
+          else
+            git checkout --quiet -b "$CASA_RAMA"
+          fi
+          destino="informes/$CASA_RAMA/$(date -u +%Y-%m-%d_%H%M)"
+          mkdir -p "$destino"
+          cp "$SALIDA"/* "$destino"/
+          git add "$destino"
+          git commit --quiet -m "Prueba cuotas casa: resultados del $(date -u '+%Y-%m-%d %H:%M') UTC" >/dev/null
+          for intento in 1 2 3 4; do
+            if git push --quiet origin "HEAD:refs/heads/$CASA_RAMA" >/dev/null 2>&1; then
+              echo "Guardado: OK"; exit 0
+            fi
+            sleep $((intento * 5))
+          done
+          echo "Guardado: FALLÓ"; exit 1
+
+      - name: Avisar por Telegram
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GUARDADO: ${{ steps.guardar.outcome == 'success' && 'ok' || 'fallo' }}
+        run: python codigo/scripts/prueba_cuotas_casa.py avisar "$SALIDA" "$GUARDADO"
+
+      - name: Resultado final
+        if: always()
+        env:
+          PRUEBA: ${{ steps.prueba.outcome }}
+          GUARDAR: ${{ steps.guardar.outcome }}
+        run: |
+          echo "Lectura y capturas: $PRUEBA · Guardado: $GUARDAR"
+          [ "$PRUEBA" = "success" ] && [ "$GUARDAR" = "success" ]
