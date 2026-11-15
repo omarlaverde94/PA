@@ -1,10 +1,17 @@
 """
 Fase 5: agente de prueba en papel (NO se apuesta dinero real).
 
-Lee sin parar las cuotas de Kambi (Paf, con Unibet para confirmar) de NFL,
-NBA, MLB y fútbol, las compara con Pinnacle y consigo mismas, y avisa por
-Telegram cada posible error. Guarda todas las cuotas (solo cambios) y cada
-alerta con cuánto duró.
+Lee sin parar las cuotas REALES de tu casa (su API pública de Kambi, mercado CO;
+dirección en CASA_API_URL) de NFL, NBA, MLB y fútbol, las compara con Pinnacle y
+consigo mismas, y avisa por Telegram cada posible error. Guarda todas las cuotas
+(solo cambios) y cada alerta con cuánto duró.
+
+Verificación 100 % automática de cada alerta:
+- Justo antes de enviarla se vuelve a leer la cuota. Si cambió o ya no está
+  abierta, NO se envía (queda registrada con el motivo).
+- El mensaje muestra la hora exacta de esa lectura.
+- A los 2, 5 y 15 minutos de enviada se vuelve a leer la cuota y se anota si se
+  mantuvo. Eso va al resumen diario y al informe final.
 
 Uso:
     python f5_agente.py                    # corre hasta que se detenga
@@ -13,6 +20,7 @@ Uso:
 Variables de entorno:
     TELEGRAM_BOT_TOKEN   token del bot (obligatorio para avisar)
     TELEGRAM_CHAT_ID     chat o chats (separados por coma) que reciben avisos
+    CASA_API_URL         dirección base de la API de cuotas de tu casa (obligatoria)
     API_FOOTBALL_KEY     clave gratis de API-Football para los marcadores de fútbol (opcional)
     F5_DATA              carpeta de datos (por defecto data/fase5)
     F5_GIT_CADA          si está, cada tantos segundos sube los datos con git
@@ -53,7 +61,7 @@ AYUDA = (
     "• solo NFL (o NBA, MLB, fútbol): avisar solo de ese deporte. \"hoy solo NFL\" o "
     "\"hoy enfócate solo en NFL\" vale hasta la medianoche.\n"
     "• todo: volver a avisar de todos los deportes.\n"
-    "• rango 1.40 2.00: cambiar el rango de cuota estimada en tu casa que genera alertas "
+    "• rango 1.40 2.00: cambiar el rango de cuota de tu casa que genera alertas "
     "(dos números entre 1.20 y 3.00, el primero menor). \"rango\" solo muestra el vigente.\n"
     "• pausa / seguir: dejar de avisar o volver a avisar (el registro sigue).\n"
     "• apagar: APAGADO DE EMERGENCIA. Deja de leer cuotas y de avisar, también en las "
@@ -115,7 +123,7 @@ def ocultar_en_registros():
     si alguna vez aparecieran en los registros (GitHub ya lo hace con los secretos)."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
-    valores = [os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("API_FOOTBALL_KEY", "")] + T.chats()
+    valores = [os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("API_FOOTBALL_KEY", ""), C.CASA_API_URL] + T.chats()
     for v in valores:
         if v:
             print(f"::add-mask::{v}", flush=True)
@@ -130,6 +138,7 @@ class Agente:
         self.reg = Registro()
         C.cargar_rango()  # el rango elegido con el comando "rango" se mantiene entre tandas
         self.est = Estimador()
+        C.NOMBRE_CASA[0] = self.est.casa if self.est.casa != "tu casa de apuestas" else "tu casa"
         self.inicio = time.time()
         self.fin = self.inicio + float(os.environ["F5_DURACION"]) if os.environ.get("F5_DURACION") else None
         self.git_cada = float(os.environ.get("F5_GIT_CADA", "0"))
@@ -196,6 +205,8 @@ class Agente:
                     if ev["id"] in self.reg.eventos:
                         self.partido_empezo(ev["id"])
                     continue
+                if C.deporte_excluido(info):
+                    continue  # tenis de mesa u otro deporte excluido: ni se vigila
                 self.reg.evento(info)
                 if ev["id"] not in self.proxima:
                     self.proxima[ev["id"]] = time.time()
@@ -367,20 +378,26 @@ class Agente:
         self.proxima.pop(evid, None)
 
     # ------------------------------------------------------------------ detección
+    def hallazgos(self, evid, filas, info):
+        """Todas las señales de un partido con sus cuotas actuales, ya evaluadas con la cuota de tu
+        casa (si merecen alerta: dentro del rango, sobre el justo y sin pasar el tope de ventaja)."""
+        props, hora_pin = self.props_pinnacle(evid)
+        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
+                                     filas, info, props)
+        por_k = {f["k"]: f for f in filas}
+        for h in hallazgos:
+            h.update(self.est.evaluar(h, por_k, info["deporte"]))
+        return hallazgos, hora_pin
+
     def detectar(self, evid):
         info = self.reg.eventos.get(evid)
         filas = list(self.filas.get(evid, {}).values())
         if not info or not filas or self.reg.empezo(evid):
             return
-        props, hora_pin = self.props_pinnacle(evid)
-        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
-                                     filas, info, props)
+        hallazgos, hora_pin = self.hallazgos(evid, filas, info)
         vistos = {h["clave"] for h in hallazgos}
         ahora = time.time()
         por_k = {f["k"]: f for f in filas}
-        # Cuota estimada en tu casa y si la señal merece alerta (dentro del rango y sobre el justo)
-        for h in hallazgos:
-            h.update(self.est.evaluar(h, por_k, info["deporte"]))
 
         # Errores abiertos que ya no están: se corrigieron (o se quitaron)
         for clave, a in list(self.reg.alertas_abiertas.items()):
@@ -414,10 +431,10 @@ class Agente:
         nuevos = [h for h in hallazgos if h["clave"] not in self.reg.alertas_abiertas]
         if not nuevos:
             return
-        # Confirmación rápida con Unibet (otra casa de Kambi): la cuota sigue ahí
-        confirmados = self.confirmar(evid, nuevos)
+        # Las cuotas ya son las reales de tu casa: no hace falta confirmar con otra casa.
+        # La verificación se hace al enviar (relectura) y después (seguimiento).
         para_avisar = []
-        for h in confirmados:
+        for h in nuevos:
             extra = {
                 "id": f"{int(ahora)}-{h['k']}-{h['regla']}", "deporte": info["deporte"],
                 "partido": info["nombre"], "liga": info["liga"], "inicio": info["inicio"],
@@ -431,19 +448,6 @@ class Agente:
             self.reg.alerta_abre(h, extra)
             para_avisar.append(self.reg.alertas_abiertas[h["clave"]])
         self.avisar(info, para_avisar)
-
-    def confirmar(self, evid, nuevos):
-        bos, _ = F.kambi_mercados([evid], op=C.KAMBI_CONFIRMA)
-        if bos is None:
-            return nuevos  # si Unibet no responde, se confía en Paf
-        ub = {f["k"]: f for f in F.filas_kambi(bos)}
-        salida = []
-        for h in nuevos:
-            f = ub.get(h["k"])
-            if f and f["st"] == "OPEN" and f["odds"] >= h["cuota"] * 0.97:
-                h["cuota_unibet"] = f["odds"]
-                salida.append(h)
-        return salida
 
     def cerrar_alerta(self, clave, motivo=None):
         a = self.reg.alertas_abiertas.get(clave)
@@ -471,14 +475,29 @@ class Agente:
         self.avisos_hora = [t for t in self.avisos_hora if t > ahora - 3600]
         if self.foco_hasta and ahora > self.foco_hasta:
             self.foco, self.foco_hasta = None, None
+        if C.deporte_excluido(info):
+            # Tenis de mesa (y cualquier deporte excluido): nunca se envía una alerta
+            for a in alertas:
+                a["no_enviada"] = "deporte excluido de las alertas"
+            return
         if self.pausa or (self.foco and info["deporte"] not in self.foco):
             return
-        # Solo alertas con la cuota ESTIMADA en tu casa dentro del rango vigente y por encima del justo.
+        # Solo alertas con la cuota REAL de tu casa dentro del rango vigente y por encima del justo.
         # Todo lo demás queda registrado para el resumen diario y el informe final.
-        enviar = [a for a in alertas if a.get("avisable")
-                  and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG
-                  and self.revisar_antes_de_enviar(info, a)]
-        if not enviar or len(self.avisos_hora) >= C.MAX_AVISOS_HORA:
+        candidatas = [a for a in alertas if a.get("avisable")
+                      and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG]
+        if not candidatas or len(self.avisos_hora) >= C.MAX_AVISOS_HORA:
+            return
+        # Relectura de la cuota justo antes de enviar (una sola consulta para el partido)
+        fresca, hora_lectura = self.releer(info["id"])
+        recalculo = None
+        if fresca is not None and any((fresca.get(a["k"]) or {}).get("odds") not in (None, a["cuota"])
+                                      for a in candidatas):
+            # Alguna cuota cambió: se vuelven a calcular las señales del partido con las cuotas nuevas
+            recalculo = {h["clave"]: h for h in self.hallazgos(info["id"], list(fresca.values()), info)[0]}
+        enviar = [a for a in candidatas if self.revisar_antes_de_enviar(info, a, fresca, hora_lectura, recalculo)]
+        if not enviar:
+            self.log(f"alerta no enviada (no pasó la relectura): {len(candidatas)} apuestas")
             return
         enviar.sort(key=lambda a: -(a.get("ventaja_rb") or 0))
         texto = INF.texto_mensaje(enviar[:5], len(enviar) - 5)
@@ -497,34 +516,146 @@ class Agente:
                 self.reg.mensajes[str(mid)] = [a["id"] for a in enviar]
             self.reg.mensajes["ultimo"] = [a["id"] for a in enviar]
             self.avisos_hora.append(ahora)
+            enviado_ts = time.time()
             for a in enviar:
                 a["avisado"] = True
-                a["avisado_ts"] = ahora
-                self.reg.avisados[a["clave"]] = ahora
+                a["avisado_ts"] = enviado_ts
+                self.reg.avisados[a["clave"]] = enviado_ts
+                self.programar_seguimiento(a, info, enviado_ts)
             self.log(f"aviso enviado: {info['nombre']} ({len(enviar)} apuestas)")
             # Guardar y subir los datos enseguida: así ninguna alerta avisada se pierde si la tanda se corta
             self.ultimo_guardado = 0
             self.ultimo_git = 0
 
-    def revisar_antes_de_enviar(self, info, a):
+    def releer(self, evid):
         """
-        Última revisión justo antes de enviar, con la cuota más reciente de Kambi:
-        la apuesta sigue abierta, la cuota estimada en tu casa sigue dentro del rango
-        vigente y la ventaja contra Pinnacle no pasa del tope. Si algo falla, no se envía
-        (queda registrada con el motivo).
+        Lee otra vez, en ese mismo instante, todas las cuotas de un partido en la API de tu casa.
+        Devuelve ({k: fila} o None si no se pudo leer o el partido ya empezó, hora de la lectura).
+        La lectura también queda en el registro de cuotas.
         """
-        f = self.filas.get(info["id"], {}).get(a["k"])
-        if not f or f["st"] != "OPEN":
-            a["no_enviada"] = "la apuesta ya no estaba abierta al momento de enviar"
+        if self.reg.empezo(evid):
+            return None, time.time()  # nunca se leen cuotas en vivo
+        bos, eventos = F.kambi_mercados([evid])
+        hora = time.time()
+        if bos is None:
+            self.errores["relectura"] += 1
+            return None, hora
+        ev = (eventos or {}).get(evid)
+        if not ev or ev.get("state") != "NOT_STARTED" or self.reg.empezo(evid):
+            if ev and ev.get("state") != "NOT_STARTED":
+                self.partido_empezo(evid)
+            return None, hora
+        filas = F.filas_kambi(bos)
+        self.reg.cuotas_leidas(filas, C.KAMBI_PRINCIPAL, completo=True, ids_eventos=[evid])
+        fresca = {f["k"]: f for f in filas}
+        self.filas[evid] = fresca
+        self.ultima_lectura[evid] = hora
+        return fresca, hora
+
+    def revisar_antes_de_enviar(self, info, a, fresca, hora_lectura, recalculo=None):
+        """
+        Última revisión con la cuota RELEÍDA justo antes de enviar:
+        - Si la apuesta está suspendida o quitada, la API no respondió o el partido empezó: no se envía.
+        - Si la cuota cambió: se recalcula la señal con la cuota nueva y se envía con esa cuota solo
+          si sigue cumpliendo todas las reglas (rango, ventaja mínima y tope del 15 %).
+        - Si no cambió: se revisan otra vez el rango y el tope.
+        Lo que no se envía queda registrado con el motivo.
+        """
+        a["relectura_ts"] = hora_lectura
+        a["relectura"] = ahora_iso(hora_lectura)
+        if fresca is None:
+            a["no_enviada"] = "no se pudo releer la cuota justo antes de enviar (o el partido ya empezó)"
             return False
+        f = fresca.get(a["k"])
+        if not f or f["st"] != "OPEN":
+            a["no_enviada"] = "la apuesta ya no estaba abierta al releerla justo antes de enviar"
+            a["cuota_relectura"] = f["odds"] if f else None
+            return False
+        a["cuota_relectura"] = f["odds"]
+        if abs(f["odds"] - a["cuota"]) > 1e-9:
+            vieja = a["cuota"]
+            cambio = f"la cuota cambió al releerla justo antes de enviar ({vieja:.2f} → {f['odds']:.2f})"
+            h = (recalculo or {}).get(a["clave"])
+            nivel = nivel_ventaja(h.get("ventaja_pin")) if h else None
+            if not h:
+                motivo = "ya no tiene ventaja suficiente"
+            elif nivel == "excesiva":
+                motivo = "la ventaja pasa del tope del 15 %"
+            elif not en_rango(h.get("cuota_rb")):
+                motivo = f"queda fuera del rango {C.texto_rango().replace(' y ', '–')}"
+            elif not h.get("avisable"):
+                motivo = "ya no tiene ventaja suficiente"
+            else:
+                motivo = None
+            if motivo:
+                a["no_enviada"] = f"{cambio} y con la cuota nueva {motivo}"
+                if nivel == "excesiva":
+                    a["descartada"] = C.MOTIVO_VENTAJA_EXCESIVA
+                return False
+            # Sigue cumpliendo todo: se envía con la cuota nueva y los valores recalculados
+            nuevos = {k: v for k, v in h.items() if k not in ("clave", "k", "ev", "casa")}
+            a.update(nuevos)
+            a["cuota_detectada"] = vieja
+            a["recalculada"] = True
         est, _ = self.est.estimar(f, info["deporte"])
         if not en_rango(est) or not en_rango(a.get("cuota_rb")):
-            a["no_enviada"] = "la cuota estimada salió del rango justo antes de enviar"
+            a["no_enviada"] = "la cuota salió del rango justo antes de enviar"
             return False
         if nivel_ventaja(a.get("ventaja_pin")) == "excesiva":
             a["descartada"] = C.MOTIVO_VENTAJA_EXCESIVA
             return False
+        a.pop("no_enviada", None)
+        a["cuota_envio"] = f["odds"]
         return True
+
+    # ------------------------------------------------------------------ seguimiento después del aviso
+    def programar_seguimiento(self, a, info, enviado_ts):
+        """Anota que hay que volver a leer esta cuota a los 2, 5 y 15 minutos del aviso."""
+        self.reg.seguimientos.append({
+            "id": a["id"], "k": a["k"], "ev": info["id"], "cuota": a.get("cuota_envio") or a["cuota"],
+            "enviado_ts": enviado_ts, "faltan": list(C.SEGUIMIENTO_MIN)})
+
+    def seguimiento(self):
+        """
+        Vuelve a leer la cuota de cada alerta enviada cuando le toca (2, 5 y 15 min después)
+        y registra si se mantuvo: abierta y pagando lo mismo o más que en el aviso.
+        Nunca se leen cuotas en vivo: si el partido ya empezó, se anota y no se mide.
+        """
+        ahora = time.time()
+        tocan = defaultdict(list)
+        for s in self.reg.seguimientos:
+            if s["faltan"] and ahora >= s["enviado_ts"] + s["faltan"][0] * 60:
+                tocan[s["ev"]].append(s)
+        for evid, lista in tocan.items():
+            if self.reg.empezo(evid):
+                fresca, hora = None, ahora
+                razon = "empezó el partido (no se leen cuotas en vivo)"
+            else:
+                fresca, hora = self.releer(evid)
+                razon = "empezó el partido (no se leen cuotas en vivo)" if self.reg.empezo(evid) else "no se pudo leer"
+            for s in lista:
+                minuto = s["faltan"].pop(0)
+                f = (fresca or {}).get(s["k"])
+                if fresca is None:
+                    estado, cuota, mantuvo = razon, None, None
+                    if razon.startswith("empezó"):
+                        s["faltan"] = []  # los siguientes tampoco se pueden medir
+                elif not f:
+                    estado, cuota, mantuvo = "quitada", None, False
+                elif f["st"] != "OPEN":
+                    estado, cuota, mantuvo = "suspendida", f["odds"], False
+                else:
+                    cuota = f["odds"]
+                    estado = "igual" if abs(cuota - s["cuota"]) < 1e-9 else ("subió" if cuota > s["cuota"] else "bajó")
+                    mantuvo = cuota >= s["cuota"] - 1e-9
+                self.reg.alertas_f.agregar({
+                    "evento": "seguimiento", "id": s["id"], "min": minuto, "hora": ahora_iso(hora),
+                    "seg_desde_aviso": round(hora - s["enviado_ts"]), "cuota_aviso": s["cuota"],
+                    "cuota": cuota, "estado": estado, "se_mantuvo": mantuvo})
+        antes = len(self.reg.seguimientos)
+        self.reg.seguimientos = [s for s in self.reg.seguimientos if s["faltan"]]
+        if tocan or len(self.reg.seguimientos) != antes:
+            self.ultimo_guardado = 0
 
     # ------------------------------------------------------------------ pedidos
     def atender_pedidos(self):
@@ -561,7 +692,7 @@ class Agente:
                 self.pausa = False
                 T.enviar("PRUEBA — no apostar\nListo: vuelvo a avisar.", chat=chat)
             elif cmd == "rango_ver":
-                T.enviar(f"PRUEBA — no apostar\n\nRango de alertas vigente: cuota estimada en tu casa entre "
+                T.enviar(f"PRUEBA — no apostar\n\nRango de alertas vigente: cuota real de tu casa entre "
                          f"{C.texto_rango()}. Para cambiarlo escribe, por ejemplo, \"rango 1.40 2.00\".", chat=chat)
             elif cmd == "rango_invalido":
                 T.enviar("PRUEBA — no apostar\n\nNo cambié el rango. Escribe \"rango\" y dos números entre "
@@ -571,7 +702,7 @@ class Agente:
                 C.guardar_rango(*deporte)
                 self.log("rango de alertas cambiado a", C.texto_rango())
                 self.guardar(forzar=True)
-                T.enviar(f"PRUEBA — no apostar\n\nListo: desde ahora solo te aviso si la cuota estimada en tu casa "
+                T.enviar(f"PRUEBA — no apostar\n\nListo: desde ahora solo te aviso si la cuota real de tu casa "
                          f"está entre {C.texto_rango()} y sigue por encima del precio justo. Este rango se mantiene "
                          "en las tandas siguientes. Todo lo demás se sigue registrando para el resumen y el informe.",
                          chat=chat)
@@ -648,7 +779,8 @@ class Agente:
                 f"• Lecturas de cuotas: {F.KAMBI.consultas + F.PIN.consultas} (fallidas {F.KAMBI.fallos + F.PIN.fallos}).\n"
                 f"• Cuotas nuevas registradas: {self.reg.contador['nuevas']}; cambios: {self.reg.contador['cambios']}.\n"
                 f"• Errores abiertos ahora: {len(self.reg.alertas_abiertas)}.\n"
-                f"• Rango de alertas: cuota estimada en tu casa entre {C.texto_rango()}.\n"
+                f"• Rango de alertas: cuota real de tu casa entre {C.texto_rango()}.\n"
+                f"• Cuotas: reales de {self.est.casa} (API) · relecturas pendientes: {len(self.reg.seguimientos)}.\n"
                 f"• Resultados: Kambi en vivo y ESPN; API-Football "
                 f"{('con aviso: ' + self.liq.apifoot.aviso) if self.liq.apifoot.aviso else ('activa' if self.liq.apifoot.activa() else 'sin clave')}"
                 f" · mensajes por editar: {len(self.reg.envios)}.\n"
@@ -781,42 +913,114 @@ class Agente:
             self.log("resumen diario enviado")
 
     # ------------------------------------------------------------------ ciclo
-    def prueba_terminada(self):
-        """La prueba dura F5_DIAS días (7) desde la primera vez que corrió."""
+    def dias_de_prueba(self):
+        """Días desde la primera tanda de la prueba (esa tanda es el día 1)."""
         ruta = C.DATA / "inicio_prueba.txt"
         if not ruta.exists():
             ruta.write_text(ahora_iso())
-        inicio = iso_a_ts(ruta.read_text().strip())
-        return time.time() - inicio >= float(os.environ.get("F5_DIAS", "7")) * 86400
+        return (time.time() - iso_a_ts(ruta.read_text().strip())) / 86400
+
+    def prueba_terminada(self):
+        """La prueba dura C.DIAS_PRUEBA días (14) desde la primera vez que corrió."""
+        return self.dias_de_prueba() >= C.DIAS_PRUEBA
+
+    def _informe(self, titulo, archivo_tablas):
+        """Liquida lo que se pueda, guarda las tablas completas y envía el informe corto por Telegram."""
+        try:
+            self.liquidar(forzar=True)
+        except Exception:  # los resultados no deben impedir el informe
+            self.log("no se pudieron bajar resultados:", error_corto())
+        alertas = INF.leer_alertas()
+        INF.tablas_finales(archivo_tablas)
+        res = {**R.leer_resultados(), **(self.liq_res or {})}  # lo guardado más lo recién liquidado
+        T.enviar(INF.informe_telegram(titulo, alertas, res, min(self.dias_de_prueba(), C.DIAS_PRUEBA)))
+        self.log(f"informe enviado: {titulo}")
+        return [a for a in alertas if a.get("avisado") and a["id"] not in self.liq_res]
+
+    def informe_intermedio_si_toca(self):
+        """Día 7: informe intermedio automático por Telegram (una sola vez)."""
+        marca = C.DATA / "informe_dia7.txt"
+        if marca.exists() or self.dias_de_prueba() < C.DIA_INFORME_INTERMEDIO:
+            return
+        marca.write_text(ahora_iso())
+        self._informe(f"Informe intermedio (día {C.DIA_INFORME_INTERMEDIO} de {C.DIAS_PRUEBA:.0f})", "tablas_dia7.md")
+        self.guardar(forzar=True)
+
+    def cierre_de_prueba(self):
+        """
+        Día 14: se deja de leer cuotas y de avisar, y se envía el informe final. Si faltan
+        resultados de alertas enviadas, las tandas siguientes solo liquidan (sin leer cuotas
+        nuevas) hasta tenerlos o hasta 48 horas, y entonces envían el informe final completo.
+        """
+        fin = C.DATA / "fin_avisado.txt"
+        completo = C.DATA / "informe_final_completo.txt"
+        if not fin.exists():
+            fin.write_text(ahora_iso())
+            pendientes = self._informe(f"Informe final (día {C.DIAS_PRUEBA:.0f})", "tablas.md")
+            if pendientes:
+                T.enviar(f"PRUEBA — no apostar\n\nTerminaron los {C.DIAS_PRUEBA:.0f} días: dejé de vigilar cuotas. "
+                         f"Faltan resultados de {len(pendientes)} alertas enviadas; te mando el informe final "
+                         f"completo cuando estén (como máximo en {C.HORAS_LIQUIDAR_DESPUES} horas).")
+            else:
+                completo.write_text(ahora_iso())
+            self.guardar(forzar=True)
+        if completo.exists():
+            self.log(f"la prueba de {C.DIAS_PRUEBA:.0f} días ya terminó; no se hace nada")
+            return
+        # Solo liquidación, sin leer cuotas nuevas
+        self.log("prueba terminada: solo se liquidan las alertas que faltan")
+        while not self.salir and not (self.fin and time.time() >= self.fin):
+            try:
+                self.atender_pedidos()
+                self.liquidar()  # respeta las pausas entre reintentos (API-Football tiene tope diario)
+                self.reg.alertas_f.volcar()
+                faltan = [a for a in INF.leer_alertas() if a.get("avisado") and a["id"] not in self.liq_res]
+                horas = (time.time() - iso_a_ts(fin.read_text().strip())) / 3600
+                if not faltan or horas >= C.HORAS_LIQUIDAR_DESPUES:
+                    completo.write_text(ahora_iso())
+                    self._informe(f"Informe final completo ({C.DIAS_PRUEBA:.0f} días, con todos los resultados)",
+                                  "tablas.md")
+                    break
+                self.guardar()
+            except Exception:
+                self.log("error al liquidar:", error_corto())
+            time.sleep(60)
+        self.guardar(forzar=True)
 
     def correr(self):
         ocultar_en_registros()
         if self.prueba_terminada():
-            self.log("la prueba de 7 días ya terminó; no se hace nada")
-            if not (C.DATA / "fin_avisado.txt").exists():
-                (C.DATA / "fin_avisado.txt").write_text(ahora_iso())
-                T.enviar("PRUEBA — no apostar\n\nTerminaron los 7 días de la prueba en papel. "
-                         "El agente dejó de vigilar. Pide el informe final cuando quieras.")
-                self.guardar(forzar=True)
+            self.cierre_de_prueba()
             return
         self.log("agente iniciado; Telegram", "activo" if T.activo() else "SIN TOKEN",
                  "; chats autorizados:", len(T.chats()))
         if T.activo() and not T.chats():
             self.log("AVISO: falta TELEGRAM_CHAT_ID; no se envían avisos ni se obedecen pedidos")
         self.probar_guardado()
-        if self.est.ok:
-            self.log("estimación de la cuota de tu casa: tabla cargada")
+        if not C.casa_configurada():
+            # Prueba nueva: solo cuotas reales. Sin la dirección de la API no hay nada que leer.
+            self.log("FALTA el secreto CASA_API_URL (API de cuotas de tu casa); el agente no corre")
+            T.enviar("PRUEBA — no apostar\n\nNo encontré la dirección de la API de cuotas de tu casa "
+                     "(secreto CASA_API_URL). Sin ella no leo cuotas ni envío alertas.")
+            return
+        if F.kambi(C.KAMBI_PRINCIPAL, f"listView/{C.DEPORTES['nfl']['kambi']}.json") is None:
+            # Solo el aviso, nunca la dirección. Se sigue intentando: puede ser una falla pasajera.
+            self.log("AVISO: la API de cuotas de tu casa no respondió al arrancar (se sigue intentando)")
+            T.enviar("PRUEBA — no apostar\n\nLa API de cuotas de tu casa no respondió al arrancar. "
+                     "Sigo intentando; mientras no responda no hay alertas.")
         else:
-            self.log("AVISO: falta la tabla para estimar la cuota de tu casa; se registra todo pero no se envían alertas")
-            T.enviar("PRUEBA — no apostar\n\nNo encontré la tabla para estimar la cuota de tu casa de apuestas. "
-                     "Sigo leyendo y registrando todo, pero NO envío alertas hasta tenerla.")
+            self.log("cuotas: API real de tu casa configurada y respondiendo")
         if self.apagado():
             self.log("el agente está APAGADO (apagado de emergencia); solo escucha \"encender\"")
         if T.activo() and T.chats() and not os.environ.get("F5_SIN_SALUDO"):
             T.enviar("PRUEBA — no apostar\n\nEl agente de la prueba en papel está corriendo. "
                      "Escribe \"estado\" para ver cómo va o \"ayuda\" para ver los pedidos.")
         while not self.salir:
-            if (self.fin and time.time() >= self.fin) or self.prueba_terminada():
+            if self.prueba_terminada():
+                self.guardar(forzar=True)
+                self.cierre_de_prueba()
+                return
+            if self.fin and time.time() >= self.fin:
                 break
             try:
                 self.atender_pedidos()
@@ -827,9 +1031,11 @@ class Agente:
                 self.refrescar_pinnacle()
                 self.leer_listas()
                 self.lecturas_completas()
+                self.seguimiento()
                 self.revisar_cierres()
                 self.liquidar()
                 self.resumen_si_toca()
+                self.informe_intermedio_si_toca()
                 self.guardar()
                 if time.time() - self.ultimo_log >= 600:
                     self.ultimo_log = time.time()

@@ -1,7 +1,8 @@
 """
 Fase 5: lectura de cuotas.
 
-- Kambi (Paf y Unibet): cuotas públicas, sin clave y sin cuenta de usuario.
+- Tu casa (plataforma Kambi): sus cuotas públicas reales, leídas de su API
+  (dirección en el secreto CASA_API_URL), sin clave y sin cuenta de usuario.
 - Pinnacle: cuotas públicas de su página (sin clave), usadas como consenso
   del mercado. Es la casa más afinada y no usa Kambi.
 
@@ -82,6 +83,11 @@ PIN = Cliente(C.PIN_PAUSA)
 
 # --------------------------------------------------------------------------- Kambi
 def kambi(op, ruta):
+    """op "casa": la API de cuotas de tu casa (CASA_API_URL, mercado CO). Otro op: esa casa de Kambi."""
+    if op == "casa":
+        if not C.casa_configurada():
+            return None
+        return KAMBI.get(f"{C.CASA_API_URL}/{ruta}", params=C.CASA_PARAMS)
     return KAMBI.get(C.KAMBI_URL.format(op=op, ruta=ruta), params=C.KAMBI_PARAMS)
 
 
@@ -106,6 +112,8 @@ def info_evento(ev, deporte):
         "local": ev.get("homeName"), "visitante": ev.get("awayName"),
         "inicio": ev.get("start"), "liga": " / ".join(path[1:]) or ev.get("group"),
         "estado": ev.get("state"),
+        # Clave del deporte en Kambi (p. ej. "table_tennis"), para excluir deportes
+        "deporte_kambi": ev.get("sport") or ((ev.get("path") or [{}])[0].get("termKey")),
     }
 
 

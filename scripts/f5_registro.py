@@ -13,7 +13,9 @@ Cuotas (data/fase5/cuotas/):
 - Los archivos se parten antes de 50 MB.
 
 Partidos: data/fase5/eventos.jsonl.gz
-Alertas: data/fase5/alertas.jsonl.gz, con un registro al abrir y otro al cerrar.
+Alertas: data/fase5/alertas/alertas_<día>_<parte>.jsonl.gz, con un registro al abrir, otro al
+cerrar y uno por cada relectura de seguimiento después del aviso ("seguimiento": a los 2, 5
+y 15 minutos, con la cuota y si se mantuvo).
 Estado (para reanudar sin repetir cuotas): data/fase5/estado.json.gz
 """
 import gzip
@@ -78,6 +80,7 @@ class Registro:
         self.avisados = {}       # clave -> hora del último aviso
         self.mensajes = {}       # número de mensaje de Telegram -> ids de alertas (para "más")
         self.envios = []         # mensajes de alerta enviados que falta editar con el resultado
+        self.seguimientos = []   # relecturas pendientes después de cada aviso (2, 5 y 15 min)
         self.contador = {"cambios": 0, "nuevas": 0}
         self._cargar()
 
@@ -95,6 +98,7 @@ class Registro:
         self.avisados = e.get("avisados", {})
         self.mensajes = e.get("mensajes", {})
         self.envios = e.get("envios", [])
+        self.seguimientos = e.get("seguimientos", [])
 
     def guardar(self):
         for a in (self.catalogo, self.cambios, self.eventos_f, self.alertas_f):
@@ -109,6 +113,7 @@ class Registro:
              "avisados": {k: v for k, v in self.avisados.items() if v > time.time() - 86400},
              "mensajes": dict(list(self.mensajes.items())[-300:]),
              "envios": self.envios[-400:],
+             "seguimientos": self.seguimientos[-400:],
              "guardado": ahora_iso()}
         tmp = self.dir / "estado.json.gz.tmp"
         with gzip.open(tmp, "wt", encoding="utf-8") as fh:
@@ -191,7 +196,8 @@ class Registro:
         # Lo que cambió mientras estuvo abierta (aviso enviado, cuota estimada, etc.)
         for campo in ("avisado", "avisado_ts", "avisable", "avisable_desde", "cuota_max", "cuota_rb",
                       "rango_rb", "justa_rb", "ventaja_rb", "en_rango", "ventaja_pin", "ventaja_alta",
-                      "descartada", "no_enviada"):
+                      "descartada", "no_enviada", "real", "relectura", "relectura_ts", "cuota_relectura",
+                      "cuota_envio"):
             if campo in a:
                 reg[campo] = a[campo]
         self.alertas_f.agregar(reg)

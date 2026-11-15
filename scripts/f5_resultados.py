@@ -29,7 +29,7 @@ Cuándo se acepta un marcador:
 Reglas (las mismas del recálculo aprobado de la fase 5): fútbol a 90 minutos más
 reposición (sin prórroga ni penales); MLB y NFL con el marcador final oficial; las
 apuestas de "primeras 5 entradas" con el marcador de esas entradas; líneas enteras que
-empatan devuelven lo apostado ("nula"); 1 unidad a la cuota estimada en tu casa.
+empatan devuelven lo apostado ("nula"); 1 unidad a la cuota real de tu casa (en las enviadas, la releída al enviar).
 
 Guarda data/fase5/resultados.json.gz: {id de alerta: {estado, gana, unidades, cuota,
 marcador, fuentes, detalle}} con estado = ganada, perdida, nula o sin resultado.
@@ -612,7 +612,7 @@ class Liquidador:
         return self._por_ev[ev]
 
     def _final(self, a, factor, detalle, marc, fuentes, nivel=None):
-        cuota = a.get("cuota_rb") or a["cuota"]
+        cuota = a.get("cuota_envio") or a.get("cuota_rb") or a["cuota"]
         estado = _estado_de(factor)
         unidades = round(factor * (cuota - 1) if factor > 0 else factor, 3)
         return {"estado": estado, "gana": (True if factor > 0 else False) if factor != 0 else None,

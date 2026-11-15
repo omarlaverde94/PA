@@ -299,6 +299,26 @@ def main(carpeta):
     return 0 if api_ok else 1
 
 
+def texto_coinciden(c):
+    """
+    Respuesta a "¿Coinciden las cuotas?". "En parte" solo si coincide al menos una pero no
+    todas. Si la página estuvo bloqueada, se dice claro que no se pudo comparar.
+    """
+    iguales, total = c.get("cuotas_iguales", 0), c.get("cuotas_comparadas", 0)
+    bloqueadas, capturas = c.get("bloqueo", 0), c.get("capturas_pedidas", 0)
+    if total == 0:
+        return "no se pudo comparar (la página no mostró las cuotas)"
+    if bloqueadas and bloqueadas >= capturas:
+        return (f"no se pudo comparar: la página bloqueó el acceso en las {bloqueadas} capturas "
+                f"(0 de {total} cuotas visibles)" if iguales == 0 else
+                f"no se puede saber: la página bloqueó el acceso ({iguales} de {total})")
+    if iguales == total:
+        return f"sí, {iguales} de {total}"
+    if iguales == 0:
+        return f"no, 0 de {total}"
+    return f"en parte, {iguales} de {total}"
+
+
 def avisar(carpeta, guardado):
     """Resumen corto por Telegram (sin enlaces ni nombres de repositorios)."""
     import f5_telegram as T
@@ -309,12 +329,7 @@ def avisar(carpeta, guardado):
     if c is None:
         texto = "PRUEBA — no apostar\n\nPrueba cuotas casa: la prueba falló antes de terminar. Revisa el registro en Actions."
     else:
-        if c["cuotas_comparadas"] == 0:
-            coinciden = "no se pudo comparar (la página no mostró las cuotas)"
-        elif c["cuotas_iguales"] == c["cuotas_comparadas"]:
-            coinciden = f"sí, {c['cuotas_iguales']} de {c['cuotas_comparadas']}"
-        else:
-            coinciden = f"en parte, {c['cuotas_iguales']} de {c['cuotas_comparadas']}"
+        coinciden = texto_coinciden(c)
         texto = ("PRUEBA — no apostar\n\nPrueba cuotas casa desde GitHub Actions\n\n"
                  f"• ¿Se leyó la API? {'sí' if c['api_ok'] else 'no'}\n"
                  f"• Partidos leídos: {c['partidos']}\n"

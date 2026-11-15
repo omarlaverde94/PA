@@ -7,12 +7,21 @@
 #   envían cada 10 min (y enseguida tras cada alerta) a la rama "datos-fase5" del repositorio de datos privado
 #   (secreto DATA_REPO), con el token del secreto PRIVATE_REPO_TOKEN. Si un
 #   envío falla, el agente avisa por Telegram y reintenta cada 5 min.
-# - La tabla para estimar la cuota de tu casa se lee del repositorio privado
-#   (data/fase5/ajuste_cuotas.json.gz en main); sin ella no se envían alertas.
+# - Prueba nueva (cuotas reales): las cuotas se leen de la API pública de tu casa
+#   (dirección en el secreto CASA_API_URL); sin ella el agente no corre. Justo antes
+#   de enviar cada alerta se vuelve a leer la cuota (si cambió, no se envía), y a los
+#   2, 5 y 15 minutos se lee otra vez para medir si se mantuvo.
+# - Los datos de esta prueba van a data/fase5/prueba-real (la prueba anterior queda
+#   intacta en data/fase5). La prueba dura 14 días desde su primera tanda: el día 7
+#   envía un informe intermedio por Telegram y el día 14 el informe final.
+# - Tenis de mesa está excluido: nunca se envía una alerta de ese deporte.
+# - Del repositorio privado (data/fase5/ajuste_cuotas.json.gz en main) se leen solo
+#   el nombre de la casa y el enlace para abrir el partido.
 # - Cada alerta se liquida sola cuando termina su partido (marcador en vivo de Kambi,
 #   API-Football y ESPN) y el mensaje original de Telegram se edita con el resultado.
 #   API-Football es opcional: si no existe el secreto API_FOOTBALL_KEY, se usa lo demás.
-# - Después de 7 días desde la primera corrida, el agente no hace nada más.
+# - Después de 14 días el agente deja de leer cuotas; solo liquida las alertas que
+#   falten (hasta 48 h) y envía el informe final completo. Luego no hace nada más.
 #
 # Seguridad:
 # - Solo arranca por horario o a mano. NUNCA con pull requests ni en copias
@@ -21,7 +30,8 @@
 # - Herramientas fijas: acciones fijadas por SHA completo, Ubuntu y Python con
 #   versión exacta y paquetes de Python con huella verificada.
 # - Claves solo como secretos: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_REPO,
-#   PRIVATE_REPO_TOKEN y API_FOOTBALL_KEY. Nunca en este archivo ni en los registros.
+#   PRIVATE_REPO_TOKEN, CASA_API_URL y API_FOOTBALL_KEY. Nunca en este archivo ni en
+#   los registros.
 #
 # Esta tarea existe igual en las dos copias del código; la única diferencia
 # permitida es el bloque "schedule" (en la copia maestra está apagado).
@@ -82,13 +92,13 @@ jobs:
         run: |
           git config user.name "agente-fase5"
           git config user.email "agente-fase5@users.noreply.github.com"
-          # Tabla para estimar la cuota de tu casa (vive solo en el repositorio privado, rama main).
+          # Nombre de la casa y enlace al partido (viven solo en el repositorio privado, rama main).
           cp data/fase5/ajuste_cuotas.json.gz "$RUNNER_TEMP/ajuste_cuotas.json.gz" 2>/dev/null || true
           if git fetch --quiet --depth 1 origin datos-fase5 >/dev/null 2>&1; then
             git checkout --quiet -B datos-fase5 FETCH_HEAD
           else
             git checkout --quiet -b datos-fase5
-            # Primera tanda: los 7 días empiezan a contar ahora.
+            # Primera tanda en esta rama: los días empiezan a contar ahora.
             rm -f data/fase5/inicio_prueba.txt data/fase5/fin_avisado.txt
           fi
 
@@ -97,7 +107,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
-          F5_DATA: ${{ github.workspace }}/datos/data/fase5
+          CASA_API_URL: ${{ secrets.CASA_API_URL }}
+          F5_DATA: ${{ github.workspace }}/datos/data/fase5/prueba-real
           F5_GIT_DIR: ${{ github.workspace }}/datos
           F5_GIT_CADA: "600"
           F5_DURACION: "20700"
