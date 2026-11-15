@@ -114,6 +114,9 @@ def texto_alerta(info, alertas, total):
         if a.get("pin_partido"):
             lineas.append(f"• Comparado con Pinnacle: {a['pin_partido']} ({a.get('pin_liga') or '—'})"
                           + (f" · Pinnacle leída a las {hora_col(a['pin_hora']).strftime('%H:%M:%S')}" if a.get("pin_hora") else ""))
+        if a.get("recalculada"):
+            lineas.append(f"• La cuota cambió de {a['cuota_detectada']:.2f} a {a.get('cuota_envio') or a['cuota']:.2f} "
+                          "al releerla justo antes de enviar; todo se recalculó con la cuota nueva y seguía cumpliendo las reglas.")
         if a.get("no_enviada"):
             lineas.append(f"• No se envió: {a['no_enviada']}")
         if texto_seguimiento(a):
@@ -218,9 +221,10 @@ def resumen_diario(reg, dia):
         avisables = sum(1 for a in del_dia if a.get("avisable"))
         avisadas = [a for a in del_dia if a.get("avisado")]
         cambiaron = sum(1 for a in del_dia if not a.get("avisado") and "cambió al releerla" in (a.get("no_enviada") or ""))
+        recalc = sum(1 for a in avisadas if a.get("recalculada"))
         lineas.append(f"Posibles errores: {len(del_dia)} · merecían alerta ({C.RANGO_PREFERIDO[0]:.2f}–{C.RANGO_PREFERIDO[1]:.2f}): {avisables} · "
-                      f"avisados: {len(avisadas)}"
-                      + (f" · no enviados porque la cuota cambió al releer: {cambiaron}" if cambiaron else ""))
+                      f"avisados: {len(avisadas)}" + (f" ({recalc} con cuota recalculada)" if recalc else "")
+                      + (f" · no enviados porque la cuota cambió y ya no cumplía: {cambiaron}" if cambiaron else ""))
         ls = linea_seguimiento(avisadas)
         if ls:
             lineas.append(ls)
@@ -321,7 +325,8 @@ def texto_corto(a, marca="🟢"):
     if a.get("ventaja_alta"):
         lineas.append(C.AVISO_VENTAJA_ALTA)
     if a.get("relectura_ts") and not a.get("no_enviada"):
-        lineas.append(f"🕒 Cuota leída a las {hora_seg(a['relectura_ts'])} (hora Colombia)")
+        lineas.append(f"🕒 Cuota leída a las {hora_seg(a['relectura_ts'])} (hora Colombia)"
+                      + (f" · actualizada al releer (antes {a['cuota_detectada']:.2f})" if a.get("recalculada") else ""))
     return "\n".join(lineas)
 
 
@@ -460,9 +465,11 @@ def tabla_seguimiento(todas):
     merecian = [a for a in todas if a.get("avisable") or a.get("avisado") or a.get("no_enviada")]
     avisadas = [a for a in todas if a.get("avisado")]
     no_env = Counter(a["no_enviada"].split(" (")[0] for a in merecian if a.get("no_enviada") and not a.get("avisado"))
+    recalc = [a for a in avisadas if a.get("recalculada")]
     out = ["## Verificación automática de las alertas", "",
-           f"- Merecían alerta: {len(merecian)} · enviadas: {len(avisadas)} (todas con la cuota releída "
-           "justo antes de enviar y sin cambios).", ""]
+           f"- Merecían alerta: {len(merecian)} · enviadas: {len(avisadas)}, todas con la cuota releída justo antes "
+           f"de enviar: {len(avisadas) - len(recalc)} con la misma cuota y {len(recalc)} con cuota recalculada "
+           "(cambió al releer y seguía cumpliendo todas las reglas).", ""]
     if no_env:
         out += ["No enviadas al releer la cuota justo antes de enviar:", ""]
         out += [f"- {motivo}: {n}" for motivo, n in no_env.most_common()]
@@ -473,12 +480,17 @@ def tabla_seguimiento(todas):
     for m, v in conteo_seguimiento(avisadas).items():
         pct = f" ({v['mantuvo'] / v['medidas']:.0%})" if v["medidas"] else ""
         out.append(f"| {m} min | {v['medidas']} | {v['mantuvo']}{pct} | {v['bajo']} | {v['cerrada']} | {v['sin_medir']} |")
+    if recalc:
+        out += ["", "Solo las enviadas con cuota recalculada:", "",
+                "| Relectura | Medidas | Se mantuvo |", "|---|---|---|"]
+        for m, v in conteo_seguimiento(recalc).items():
+            out.append(f"| {m} min | {v['medidas']} | {v['mantuvo']} |")
     out += ["", f"Muestra: {len(avisadas)} alertas enviadas. Con menos de 20 la confianza es nula.", ""]
     return out
 
 
-def tablas_finales():
-    """Tablas del informe final (data/fase5/tablas.md)."""
+def tablas_finales(nombre="tablas.md"):
+    """Tablas del informe (data/fase5/<nombre>): tablas.md el día 14, tablas_dia7.md el día 7."""
     todas = sorted(leer_alertas(), key=lambda a: a["detectado"])
     res = leer_resultados()
     enc = ("| Grupo | Errores | Duración mediana | Alcanzables (2+ min) | Con resultado | Ganadas | "
@@ -508,9 +520,67 @@ def tablas_finales():
     bloque("Merecían alerta (cuota en el rango y sobre el justo)", lambda a: "merecía alerta" if a.get("avisable") else "solo registro")
     bloque("Solo las alcanzables (duraron 2 min o más)", lambda a: "alcanzable" if a.get("alcanzable") else "no alcanzable / abierta")
     bloque("Avisadas por Telegram", lambda a: "avisada" if a.get("avisado") else "solo registrada")
-    ruta = C.DATA / "tablas.md"
+    ruta = C.DATA / nombre
     ruta.write_text("\n".join(out))
     return ruta
+
+
+# ---------------------------------------------------------------------------- informes por Telegram
+def _numeros(grupo, res):
+    """Ganadas, perdidas, nulas, sin resultado, unidades, rendimiento ± margen y peor racha."""
+    con = [a for a in grupo if res.get(a["id"], {}).get("gana") is not None]
+    u = [res[a["id"]]["unidades"] for a in con]
+    racha = peor = 0
+    for a in sorted(con, key=lambda a: a["detectado"]):
+        racha = racha + 1 if not res[a["id"]]["gana"] else 0
+        peor = max(peor, racha)
+    media = sum(u) / len(u) if u else None
+    margen = 2 * statistics.pstdev(u) / len(u) ** 0.5 if len(u) > 1 else None
+    return {"n": len(grupo), "con": len(con), "ganadas": sum(1 for a in con if res[a["id"]]["gana"]),
+            "perdidas": sum(1 for a in con if not res[a["id"]]["gana"]),
+            "nulas": sum(1 for a in grupo if res.get(a["id"], {}).get("estado") == "nula"),
+            "pendientes": sum(1 for a in grupo if a["id"] not in res),
+            "unidades": sum(u), "media": media, "margen": margen, "peor": peor,
+            "confianza": "nula" if len(u) < 20 else "baja" if len(u) < 100 else "media" if len(u) < 400 else "alta"}
+
+
+def informe_telegram(titulo, alertas, res, dias):
+    """Informe corto para Telegram (día 7 y día 14). Las tablas completas quedan en el repositorio privado."""
+    casa = next((a["casa"] for a in alertas if a.get("casa")), "tu casa de apuestas")
+    avisadas = [a for a in alertas if a.get("avisado")]
+    merecian = [a for a in alertas if a.get("avisable") or a.get("avisado") or a.get("no_enviada")]
+    no_env = Counter(("la cuota cambió y ya no cumplía" if "cambió al releerla" in a["no_enviada"]
+                      else a["no_enviada"].split(" (")[0])
+                     for a in merecian if a.get("no_enviada") and not a.get("avisado"))
+    n = _numeros(avisadas, res)
+    lineas = [f"📊 {titulo} · PRUEBA, no apostar", "",
+              f"Días de prueba: {dias:.0f} · posibles errores registrados: {len(alertas)} · merecían alerta: {len(merecian)}",
+              f"Alertas enviadas: {n['n']} ({sum(1 for a in avisadas if a.get('recalculada'))} con cuota recalculada al releer)"]
+    if no_env:
+        lineas.append("No enviadas al releer: " + " · ".join(f"{m}: {c}" for m, c in no_env.most_common(4)))
+    if n["con"]:
+        lineas.append(f"Resultado de las enviadas: {n['ganadas']} ganadas, {n['perdidas']} perdidas, {n['nulas']} nulas · "
+                      f"{n['unidades']:+.1f} u ({n['media']:+.0%} por apuesta"
+                      + (f" ± {n['margen']:.0%}" if n["margen"] is not None else "") + ")")
+        lineas.append(f"Peor racha de pérdidas: {n['peor']} · confianza: {n['confianza']} (muestra de {n['con']})")
+    else:
+        lineas.append("Resultado de las enviadas: todavía ninguna con resultado")
+    if n["pendientes"]:
+        lineas.append(f"Faltan resultados de {n['pendientes']} alertas enviadas.")
+    ls = linea_seguimiento(avisadas)
+    if ls:
+        lineas.append(ls)
+    por_dep = defaultdict(list)
+    for a in avisadas:
+        por_dep[C.DEPORTES.get(a["deporte"], {}).get("nombre", a["deporte"])].append(a)
+    if por_dep:
+        lineas.append("Por deporte: " + " · ".join(
+            f"{d} {len(g)} ({_numeros(g, res)['unidades']:+.1f} u)" for d, g in sorted(por_dep.items())))
+    lineas += ["", "Con menos de 20 alertas con resultado la confianza es nula: no saques conclusiones todavía."
+               if n["con"] < 20 else "Ningún resultado de la prueba hace segura una apuesta.",
+               "Tablas completas guardadas en el repositorio privado.",
+               f"Verifica siempre la cuota real en {casa} antes de apostar."]
+    return "\n".join(lineas)
 
 
 if __name__ == "__main__":

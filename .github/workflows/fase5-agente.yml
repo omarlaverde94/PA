@@ -12,13 +12,16 @@
 #   de enviar cada alerta se vuelve a leer la cuota (si cambió, no se envía), y a los
 #   2, 5 y 15 minutos se lee otra vez para medir si se mantuvo.
 # - Los datos de esta prueba van a data/fase5/prueba-real (la prueba anterior queda
-#   intacta en data/fase5). Los 7 días empiezan a contar en su primera tanda.
+#   intacta en data/fase5). La prueba dura 14 días desde su primera tanda: el día 7
+#   envía un informe intermedio por Telegram y el día 14 el informe final.
+# - Tenis de mesa está excluido: nunca se envía una alerta de ese deporte.
 # - Del repositorio privado (data/fase5/ajuste_cuotas.json.gz en main) se leen solo
 #   el nombre de la casa y el enlace para abrir el partido.
 # - Cada alerta se liquida sola cuando termina su partido (marcador en vivo de Kambi,
 #   API-Football y ESPN) y el mensaje original de Telegram se edita con el resultado.
 #   API-Football es opcional: si no existe el secreto API_FOOTBALL_KEY, se usa lo demás.
-# - Después de 7 días desde la primera corrida, el agente no hace nada más.
+# - Después de 14 días el agente deja de leer cuotas; solo liquida las alertas que
+#   falten (hasta 48 h) y envía el informe final completo. Luego no hace nada más.
 #
 # Seguridad:
 # - Solo arranca por horario o a mano. NUNCA con pull requests ni en copias
@@ -95,7 +98,7 @@ jobs:
             git checkout --quiet -B datos-fase5 FETCH_HEAD
           else
             git checkout --quiet -b datos-fase5
-            # Primera tanda: los 7 días empiezan a contar ahora.
+            # Primera tanda en esta rama: los días empiezan a contar ahora.
             rm -f data/fase5/inicio_prueba.txt data/fase5/fin_avisado.txt
           fi
 

@@ -205,6 +205,8 @@ class Agente:
                     if ev["id"] in self.reg.eventos:
                         self.partido_empezo(ev["id"])
                     continue
+                if C.deporte_excluido(info):
+                    continue  # tenis de mesa u otro deporte excluido: ni se vigila
                 self.reg.evento(info)
                 if ev["id"] not in self.proxima:
                     self.proxima[ev["id"]] = time.time()
@@ -376,20 +378,26 @@ class Agente:
         self.proxima.pop(evid, None)
 
     # ------------------------------------------------------------------ detección
+    def hallazgos(self, evid, filas, info):
+        """Todas las señales de un partido con sus cuotas actuales, ya evaluadas con la cuota de tu
+        casa (si merecen alerta: dentro del rango, sobre el justo y sin pasar el tope de ventaja)."""
+        props, hora_pin = self.props_pinnacle(evid)
+        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
+                                     filas, info, props)
+        por_k = {f["k"]: f for f in filas}
+        for h in hallazgos:
+            h.update(self.est.evaluar(h, por_k, info["deporte"]))
+        return hallazgos, hora_pin
+
     def detectar(self, evid):
         info = self.reg.eventos.get(evid)
         filas = list(self.filas.get(evid, {}).values())
         if not info or not filas or self.reg.empezo(evid):
             return
-        props, hora_pin = self.props_pinnacle(evid)
-        hallazgos = agregar_pinnacle(internos(filas, info) + contra_mercado(filas, info, props),
-                                     filas, info, props)
+        hallazgos, hora_pin = self.hallazgos(evid, filas, info)
         vistos = {h["clave"] for h in hallazgos}
         ahora = time.time()
         por_k = {f["k"]: f for f in filas}
-        # Cuota de tu casa (la real) y si la señal merece alerta (dentro del rango y sobre el justo)
-        for h in hallazgos:
-            h.update(self.est.evaluar(h, por_k, info["deporte"]))
 
         # Errores abiertos que ya no están: se corrigieron (o se quitaron)
         for clave, a in list(self.reg.alertas_abiertas.items()):
@@ -467,6 +475,11 @@ class Agente:
         self.avisos_hora = [t for t in self.avisos_hora if t > ahora - 3600]
         if self.foco_hasta and ahora > self.foco_hasta:
             self.foco, self.foco_hasta = None, None
+        if C.deporte_excluido(info):
+            # Tenis de mesa (y cualquier deporte excluido): nunca se envía una alerta
+            for a in alertas:
+                a["no_enviada"] = "deporte excluido de las alertas"
+            return
         if self.pausa or (self.foco and info["deporte"] not in self.foco):
             return
         # Solo alertas con la cuota REAL de tu casa dentro del rango vigente y por encima del justo.
@@ -477,9 +490,14 @@ class Agente:
             return
         # Relectura de la cuota justo antes de enviar (una sola consulta para el partido)
         fresca, hora_lectura = self.releer(info["id"])
-        enviar = [a for a in candidatas if self.revisar_antes_de_enviar(info, a, fresca, hora_lectura)]
+        recalculo = None
+        if fresca is not None and any((fresca.get(a["k"]) or {}).get("odds") not in (None, a["cuota"])
+                                      for a in candidatas):
+            # Alguna cuota cambió: se vuelven a calcular las señales del partido con las cuotas nuevas
+            recalculo = {h["clave"]: h for h in self.hallazgos(info["id"], list(fresca.values()), info)[0]}
+        enviar = [a for a in candidatas if self.revisar_antes_de_enviar(info, a, fresca, hora_lectura, recalculo)]
         if not enviar:
-            self.log(f"alerta no enviada (cambió al releer): {len(candidatas)} apuestas")
+            self.log(f"alerta no enviada (no pasó la relectura): {len(candidatas)} apuestas")
             return
         enviar.sort(key=lambda a: -(a.get("ventaja_rb") or 0))
         texto = INF.texto_mensaje(enviar[:5], len(enviar) - 5)
@@ -534,12 +552,14 @@ class Agente:
         self.ultima_lectura[evid] = hora
         return fresca, hora
 
-    def revisar_antes_de_enviar(self, info, a, fresca, hora_lectura):
+    def revisar_antes_de_enviar(self, info, a, fresca, hora_lectura, recalculo=None):
         """
-        Última revisión con la cuota RELEÍDA justo antes de enviar: la apuesta sigue abierta,
-        la cuota es exactamente la misma que se detectó, sigue dentro del rango vigente y la
-        ventaja contra Pinnacle no pasa del tope. Si algo falla, no se envía (queda registrada
-        con el motivo).
+        Última revisión con la cuota RELEÍDA justo antes de enviar:
+        - Si la apuesta está suspendida o quitada, la API no respondió o el partido empezó: no se envía.
+        - Si la cuota cambió: se recalcula la señal con la cuota nueva y se envía con esa cuota solo
+          si sigue cumpliendo todas las reglas (rango, ventaja mínima y tope del 15 %).
+        - Si no cambió: se revisan otra vez el rango y el tope.
+        Lo que no se envía queda registrado con el motivo.
         """
         a["relectura_ts"] = hora_lectura
         a["relectura"] = ahora_iso(hora_lectura)
@@ -553,9 +573,30 @@ class Agente:
             return False
         a["cuota_relectura"] = f["odds"]
         if abs(f["odds"] - a["cuota"]) > 1e-9:
-            a["no_enviada"] = (f"la cuota cambió al releerla justo antes de enviar "
-                               f"({a['cuota']:.2f} → {f['odds']:.2f})")
-            return False
+            vieja = a["cuota"]
+            cambio = f"la cuota cambió al releerla justo antes de enviar ({vieja:.2f} → {f['odds']:.2f})"
+            h = (recalculo or {}).get(a["clave"])
+            nivel = nivel_ventaja(h.get("ventaja_pin")) if h else None
+            if not h:
+                motivo = "ya no tiene ventaja suficiente"
+            elif nivel == "excesiva":
+                motivo = "la ventaja pasa del tope del 15 %"
+            elif not en_rango(h.get("cuota_rb")):
+                motivo = f"queda fuera del rango {C.texto_rango().replace(' y ', '–')}"
+            elif not h.get("avisable"):
+                motivo = "ya no tiene ventaja suficiente"
+            else:
+                motivo = None
+            if motivo:
+                a["no_enviada"] = f"{cambio} y con la cuota nueva {motivo}"
+                if nivel == "excesiva":
+                    a["descartada"] = C.MOTIVO_VENTAJA_EXCESIVA
+                return False
+            # Sigue cumpliendo todo: se envía con la cuota nueva y los valores recalculados
+            nuevos = {k: v for k, v in h.items() if k not in ("clave", "k", "ev", "casa")}
+            a.update(nuevos)
+            a["cuota_detectada"] = vieja
+            a["recalculada"] = True
         est, _ = self.est.estimar(f, info["deporte"])
         if not en_rango(est) or not en_rango(a.get("cuota_rb")):
             a["no_enviada"] = "la cuota salió del rango justo antes de enviar"
@@ -872,23 +913,84 @@ class Agente:
             self.log("resumen diario enviado")
 
     # ------------------------------------------------------------------ ciclo
-    def prueba_terminada(self):
-        """La prueba dura F5_DIAS días (7) desde la primera vez que corrió."""
+    def dias_de_prueba(self):
+        """Días desde la primera tanda de la prueba (esa tanda es el día 1)."""
         ruta = C.DATA / "inicio_prueba.txt"
         if not ruta.exists():
             ruta.write_text(ahora_iso())
-        inicio = iso_a_ts(ruta.read_text().strip())
-        return time.time() - inicio >= float(os.environ.get("F5_DIAS", "7")) * 86400
+        return (time.time() - iso_a_ts(ruta.read_text().strip())) / 86400
+
+    def prueba_terminada(self):
+        """La prueba dura C.DIAS_PRUEBA días (14) desde la primera vez que corrió."""
+        return self.dias_de_prueba() >= C.DIAS_PRUEBA
+
+    def _informe(self, titulo, archivo_tablas):
+        """Liquida lo que se pueda, guarda las tablas completas y envía el informe corto por Telegram."""
+        try:
+            self.liquidar(forzar=True)
+        except Exception:  # los resultados no deben impedir el informe
+            self.log("no se pudieron bajar resultados:", error_corto())
+        alertas = INF.leer_alertas()
+        INF.tablas_finales(archivo_tablas)
+        res = {**R.leer_resultados(), **(self.liq_res or {})}  # lo guardado más lo recién liquidado
+        T.enviar(INF.informe_telegram(titulo, alertas, res, min(self.dias_de_prueba(), C.DIAS_PRUEBA)))
+        self.log(f"informe enviado: {titulo}")
+        return [a for a in alertas if a.get("avisado") and a["id"] not in self.liq_res]
+
+    def informe_intermedio_si_toca(self):
+        """Día 7: informe intermedio automático por Telegram (una sola vez)."""
+        marca = C.DATA / "informe_dia7.txt"
+        if marca.exists() or self.dias_de_prueba() < C.DIA_INFORME_INTERMEDIO:
+            return
+        marca.write_text(ahora_iso())
+        self._informe(f"Informe intermedio (día {C.DIA_INFORME_INTERMEDIO} de {C.DIAS_PRUEBA:.0f})", "tablas_dia7.md")
+        self.guardar(forzar=True)
+
+    def cierre_de_prueba(self):
+        """
+        Día 14: se deja de leer cuotas y de avisar, y se envía el informe final. Si faltan
+        resultados de alertas enviadas, las tandas siguientes solo liquidan (sin leer cuotas
+        nuevas) hasta tenerlos o hasta 48 horas, y entonces envían el informe final completo.
+        """
+        fin = C.DATA / "fin_avisado.txt"
+        completo = C.DATA / "informe_final_completo.txt"
+        if not fin.exists():
+            fin.write_text(ahora_iso())
+            pendientes = self._informe(f"Informe final (día {C.DIAS_PRUEBA:.0f})", "tablas.md")
+            if pendientes:
+                T.enviar(f"PRUEBA — no apostar\n\nTerminaron los {C.DIAS_PRUEBA:.0f} días: dejé de vigilar cuotas. "
+                         f"Faltan resultados de {len(pendientes)} alertas enviadas; te mando el informe final "
+                         f"completo cuando estén (como máximo en {C.HORAS_LIQUIDAR_DESPUES} horas).")
+            else:
+                completo.write_text(ahora_iso())
+            self.guardar(forzar=True)
+        if completo.exists():
+            self.log(f"la prueba de {C.DIAS_PRUEBA:.0f} días ya terminó; no se hace nada")
+            return
+        # Solo liquidación, sin leer cuotas nuevas
+        self.log("prueba terminada: solo se liquidan las alertas que faltan")
+        while not self.salir and not (self.fin and time.time() >= self.fin):
+            try:
+                self.atender_pedidos()
+                self.liquidar()  # respeta las pausas entre reintentos (API-Football tiene tope diario)
+                self.reg.alertas_f.volcar()
+                faltan = [a for a in INF.leer_alertas() if a.get("avisado") and a["id"] not in self.liq_res]
+                horas = (time.time() - iso_a_ts(fin.read_text().strip())) / 3600
+                if not faltan or horas >= C.HORAS_LIQUIDAR_DESPUES:
+                    completo.write_text(ahora_iso())
+                    self._informe(f"Informe final completo ({C.DIAS_PRUEBA:.0f} días, con todos los resultados)",
+                                  "tablas.md")
+                    break
+                self.guardar()
+            except Exception:
+                self.log("error al liquidar:", error_corto())
+            time.sleep(60)
+        self.guardar(forzar=True)
 
     def correr(self):
         ocultar_en_registros()
         if self.prueba_terminada():
-            self.log("la prueba de 7 días ya terminó; no se hace nada")
-            if not (C.DATA / "fin_avisado.txt").exists():
-                (C.DATA / "fin_avisado.txt").write_text(ahora_iso())
-                T.enviar("PRUEBA — no apostar\n\nTerminaron los 7 días de la prueba en papel. "
-                         "El agente dejó de vigilar. Pide el informe final cuando quieras.")
-                self.guardar(forzar=True)
+            self.cierre_de_prueba()
             return
         self.log("agente iniciado; Telegram", "activo" if T.activo() else "SIN TOKEN",
                  "; chats autorizados:", len(T.chats()))
@@ -914,7 +1016,11 @@ class Agente:
             T.enviar("PRUEBA — no apostar\n\nEl agente de la prueba en papel está corriendo. "
                      "Escribe \"estado\" para ver cómo va o \"ayuda\" para ver los pedidos.")
         while not self.salir:
-            if (self.fin and time.time() >= self.fin) or self.prueba_terminada():
+            if self.prueba_terminada():
+                self.guardar(forzar=True)
+                self.cierre_de_prueba()
+                return
+            if self.fin and time.time() >= self.fin:
                 break
             try:
                 self.atender_pedidos()
@@ -929,6 +1035,7 @@ class Agente:
                 self.revisar_cierres()
                 self.liquidar()
                 self.resumen_si_toca()
+                self.informe_intermedio_si_toca()
                 self.guardar()
                 if time.time() - self.ultimo_log >= 600:
                     self.ultimo_log = time.time()

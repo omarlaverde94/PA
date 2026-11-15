@@ -201,8 +201,23 @@ with contextlib.redirect_stdout(salida):
     ag.reg.alertas_abiertas[alerta["clave"]] = alerta  # como en la vida real: la alerta está en el registro
     # Relectura justo antes de enviar: se vuelve a leer la cuota REAL en la API de la casa
     assert ag.est.real and ag.est.ok, "con CASA_API_URL la cuota debe ser la real, sin estimar"
-    for cambio, motivo in [({"odds": 1.90}, "la cuota cambió al releerla justo antes de enviar (1.95 → 1.90)"),
-                           ({"odds": 2.05}, "la cuota cambió al releerla justo antes de enviar (1.95 → 2.05)"),
+    # Recálculo simulado de la señal con la cuota nueva: Pinnacle dice que lo justo es justa_prueba[0]
+    justa_prueba = [1.75]
+
+    def falsos_hallazgos(evid, filas, info_):
+        f = filas[0]
+        h = {"clave": "mercado:1", "k": 1, "ev": evid, "regla": "mercado", "tipo": "mercado", "cuota": f["odds"],
+             "justa": justa_prueba[0], "ventaja": round(f["odds"] / justa_prueba[0] - 1, 4), "apuesta": "Más de 45.5",
+             "respaldo": "r", "explicacion": "e2", "confianza": "media"}
+        if h["ventaja"] < A.C.UMBRAL_MERCADO:
+            return [], None  # sin ventaja mínima el detector ni siquiera la marca
+        h.update(ag.est.evaluar(h, {1: f}, info_["deporte"]))
+        return [h], None
+    ag.hallazgos = falsos_hallazgos
+    for cambio, motivo in [({"odds": 1.80}, "la cuota cambió al releerla justo antes de enviar (1.95 → 1.80) "
+                                            "y con la cuota nueva ya no tiene ventaja suficiente"),
+                           ({"odds": 2.05}, "la cuota cambió al releerla justo antes de enviar (1.95 → 2.05) "
+                                            "y con la cuota nueva la ventaja pasa del tope del 15 %"),
                            ({"st": "SUSPENDED"}, "la apuesta ya no estaba abierta"),
                            ({"st": "QUITADA"}, "la apuesta ya no estaba abierta"),
                            ({"falla": True}, "no se pudo releer la cuota"),
@@ -216,6 +231,36 @@ with contextlib.redirect_stdout(salida):
     api_casa.update({"odds": 1.95, "st": "OPEN", "estado_partido": "NOT_STARTED", "falla": False})
     ag.reg.cerrados.discard(1028811658)
     ag.reg.alertas_abiertas[alerta["clave"]] = alerta  # el caso "ya empezó" la cerró: se vuelve a abrir
+    # Cambió y con la cuota nueva queda fuera del rango (ventaja dentro del tope): no se envía
+    justa_prueba[0], api_casa["odds"] = 1.95, 2.10
+    fuera = dict(alerta, id="al-f")
+    ag.avisar(info, [fuera])
+    assert len(enviados) == antes and fuera["no_enviada"].endswith("queda fuera del rango 1.40–2.00"), fuera["no_enviada"]
+    # Cambió pero con la cuota nueva sigue cumpliendo todo: se envía con la cuota nueva, recalculada
+    justa_prueba[0], api_casa["odds"] = 1.75, 1.90
+    recalc = dict(alerta, id="al-r")
+    ag.avisar(info, [recalc])
+    assert len(enviados) == antes + 1, "no se envió una alerta que con la cuota nueva seguía cumpliendo"
+    assert recalc["recalculada"] and recalc["cuota_detectada"] == 1.95 and recalc["cuota_envio"] == 1.90
+    assert recalc["cuota_rb"] == 1.90 and recalc["ventaja_rb"] == round(1.90 / 1.75 - 1, 4) and "no_enviada" not in recalc
+    assert "Casa de prueba paga 1.90" in enviados[-1][1] and "actualizada al releer (antes 1.95)" in enviados[-1][1]
+    assert INF.texto_alerta(info, [recalc], 1).count("La cuota cambió de 1.95 a 1.90") == 1
+    assert [x["cuota"] for x in ag.reg.seguimientos if x["id"] == "al-r"] == [1.90], "el seguimiento debe usar la cuota nueva"
+    rec_av = dict(recalc, avisado=True)
+    assert "1 con cuota recalculada" in "\n".join(INF.tabla_seguimiento([rec_av, dict(alerta, avisado=True)]))
+    enviados.pop(), botones.pop(), fotos and fotos.pop()
+    ag.reg.envios.clear(), ag.avisos_hora.clear(), ag.reg.avisados.clear()
+    ag.reg.seguimientos[:] = [x for x in ag.reg.seguimientos if x["id"] != "al-r"]
+    api_casa["odds"] = 1.95
+    # Tenis de mesa está excluido: nunca se envía una alerta (ni se lee la cuota)
+    for info_tt in (dict(info, deporte_kambi="TABLE_TENNIS"), dict(info, deporte_kambi="table_tennis"),
+                    dict(info, deporte="tenis_mesa"), dict(info, liga="Table Tennis / Czech Liga Pro")):
+        tt = dict(alerta, id="al-tt")
+        n_lect = api_casa["lecturas"]
+        ag.avisar(info_tt, [tt])
+        assert len(enviados) == antes and api_casa["lecturas"] == n_lect, f"se envió una alerta de tenis de mesa: {info_tt}"
+        assert tt["no_enviada"] == "deporte excluido de las alertas"
+    assert not A.C.deporte_excluido(dict(info, deporte_kambi="AMERICAN_FOOTBALL"))
     # Una cuota que ya salió del rango al releer tampoco se envía
     api_casa["odds"] = 2.30
     ag.avisar(info, [dict(alerta, cuota=2.30)])
@@ -329,7 +374,47 @@ with contextlib.redirect_stdout(salida):
     # un enlace que no sea https no se usa
     assert T.enviar_alerta("x", None, ("b", "javascript:alert(1)")) and botones[-1] is None
     ag.reg.alertas_abiertas.clear()
-print("Relectura de la cuota real justo antes de enviar (si cambió, no se envía) y hora de lectura: OK")
+
+    # Prueba de 14 días: informe intermedio el día 7 y final el día 14, por Telegram
+    assert A.C.DIAS_PRUEBA == 14 and A.C.DIA_INFORME_INTERMEDIO == 7
+    inicio = Path(tmp) / "inicio_prueba.txt"
+    liquidadas = {}
+
+    def falso_liquidar(forzar=False):
+        ag.liq_res = liquidadas
+    ag.liquidar = falso_liquidar
+    inicio.write_text(A.ahora_iso(A.time.time() - 6.9 * 86400))
+    n_env = len(enviados)
+    ag.informe_intermedio_si_toca()
+    assert len(enviados) == n_env and not ag.prueba_terminada(), "informe intermedio antes del día 7"
+    inicio.write_text(A.ahora_iso(A.time.time() - 7.01 * 86400))
+    ag.informe_intermedio_si_toca()
+    ag.informe_intermedio_si_toca()
+    assert len(enviados) == n_env + 1 and "Informe intermedio (día 7 de 14)" in enviados[-1][1], "falta el informe del día 7"
+    assert (Path(tmp) / "tablas_dia7.md").exists() and not ag.prueba_terminada()
+    # Día 14 con una alerta enviada sin resultado: informe final, aviso y, cuando llega el resultado, el completo
+    ag.reg.alerta_abre({"clave": "mercado:99", "k": 99, "ev": 5, "regla": "mercado", "cuota": 1.9, "apuesta": "x"},
+                       {"id": "al-99", "deporte": "nfl", "partido": "P", "inicio": "2099-01-01T00:00:00Z",
+                        "detectado": A.ahora_iso(), "detectado_ts": A.time.time(), "avisado": True})
+    ag.reg.alertas_f.volcar()
+    inicio.write_text(A.ahora_iso(A.time.time() - 14.01 * 86400))
+    assert ag.prueba_terminada()
+    real_sleep = A.time.sleep
+    A.time.sleep = lambda s_: liquidadas.update({"al-99": {"estado": "ganada", "gana": True, "unidades": 0.9}})
+    try:
+        ag.cierre_de_prueba()
+    finally:
+        A.time.sleep = real_sleep
+    textos = [t for _, t in enviados[n_env + 1:]]
+    assert "Informe final (día 14)" in textos[0] and "Faltan resultados de 1" in textos[0], textos
+    assert "Terminaron los 14 días" in textos[1]
+    assert "Informe final completo" in textos[2] and "1 ganadas" in textos[2], textos[2]
+    n_env = len(enviados)
+    ag.cierre_de_prueba()
+    assert len(enviados) == n_env, "el informe final se envió dos veces"
+print("Prueba de 14 días con informe intermedio el día 7 y final el día 14 por Telegram: OK")
+print("Relectura de la cuota real justo antes de enviar (si cambió, se recalcula y solo se envía si cumple) y hora de lectura: OK")
+print("Tenis de mesa excluido: no se envía ninguna alerta de ese deporte: OK")
 print("Seguimiento a los 2, 5 y 15 minutos (sin cuotas en vivo) en el registro, el resumen y el informe: OK")
 print("Revisión antes de enviar, tope de ventaja y edición del mensaje con el resultado: OK")
 print("Alertas cortas con imagen y botón, \"más\" solo para tu chat, solo si merecen alerta; comando rango seguro: OK")

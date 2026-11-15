@@ -112,6 +112,8 @@ def info_evento(ev, deporte):
         "local": ev.get("homeName"), "visitante": ev.get("awayName"),
         "inicio": ev.get("start"), "liga": " / ".join(path[1:]) or ev.get("group"),
         "estado": ev.get("state"),
+        # Clave del deporte en Kambi (p. ej. "table_tennis"), para excluir deportes
+        "deporte_kambi": ev.get("sport") or ((ev.get("path") or [{}])[0].get("termKey")),
     }
 
 

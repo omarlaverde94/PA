@@ -34,8 +34,26 @@ def casa_configurada():
     return CASA_API_URL.startswith("https://")
 
 
-# Relectura de la cuota justo antes de enviar una alerta: si cambió (o ya no está
-# abierta), la alerta NO se envía y queda registrada con el motivo.
+# Deportes excluidos de las alertas: tenis de mesa (descartado en fases anteriores).
+# Se reconocen por la clave de deporte de Kambi; nunca se envía una alerta de ellos.
+DEPORTES_EXCLUIDOS = {"table_tennis", "TABLE_TENNIS"}
+
+
+def deporte_excluido(info):
+    return (info.get("deporte") not in DEPORTES or info.get("deporte_kambi") in DEPORTES_EXCLUIDOS
+            or "table tennis" in (info.get("liga") or "").lower())
+
+
+# Duración de la prueba nueva y día del informe intermedio (se cuentan desde la primera tanda).
+DIAS_PRUEBA = float(os.environ.get("F5_DIAS", "14"))
+DIA_INFORME_INTERMEDIO = 7
+# Después del día 14 se siguen liquidando las alertas que falten (sin leer cuotas nuevas)
+# hasta este número de horas; luego se envía el informe final completo.
+HORAS_LIQUIDAR_DESPUES = 48
+
+# Relectura de la cuota justo antes de enviar una alerta: si está suspendida o quitada, la API
+# no respondió o el partido empezó, NO se envía. Si la cuota cambió, se recalcula con la cuota
+# nueva y solo se envía si sigue cumpliendo todas las reglas.
 # Seguimiento: minutos después de cada alerta enviada en que se vuelve a leer la cuota
 # para medir si se mantuvo (solo antes del inicio del partido).
 SEGUIMIENTO_MIN = (2, 5, 15)
