@@ -82,27 +82,52 @@ def enviar_alerta(texto, imagen=None, boton=None):
     """
     Envía una alerta a los chats autorizados: la imagen (si hay) con el texto
     corto debajo, y un botón con enlace (si hay). Si la imagen falla, manda
-    solo el texto. Devuelve los números de los mensajes enviados (para "más").
+    solo el texto. Devuelve una lista con un dato por mensaje enviado:
+    {"id": número del mensaje, "chat": posición del chat en la lista autorizada, "foto": si
+    salió con imagen}. Con eso se puede editar después (nunca se guarda el número de chat).
     """
     teclado = None
     if boton and enlace_seguro(boton[1]):
         teclado = {"inline_keyboard": [[{"text": boton[0], "url": boton[1]}]]}
     ids = []
-    for c in chats():
-        r = None
+    for pos, c in enumerate(chats()):
+        r, foto = None, False
         if imagen:
             datos = {"chat_id": c, "caption": texto[:1024]}
             if teclado:
                 datos["reply_markup"] = teclado
             r = _llamar("sendPhoto", datos, timeout=60, archivos={"photo": ("alerta.png", imagen, "image/png")})
+            foto = r is not None
         if r is None:
             datos = {"chat_id": c, "text": texto[:4000], "disable_web_page_preview": True}
             if teclado:
                 datos["reply_markup"] = teclado
             r = _llamar("sendMessage", datos)
         if r and "message_id" in r:
-            ids.append(r["message_id"])
+            ids.append({"id": r["message_id"], "chat": pos, "foto": foto})
     return ids
+
+
+def editar_alerta(envio, texto, boton=None):
+    """
+    Edita un mensaje de alerta ya enviado (para agregarle el resultado). `envio` es uno de
+    los datos que devolvió enviar_alerta. Solo edita mensajes de chats autorizados; el
+    botón se vuelve a poner porque Telegram lo quita al editar. Devuelve True si se editó.
+    """
+    autorizados = chats()
+    try:
+        chat = autorizados[int(envio["chat"])]
+        mid = int(envio["id"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    datos = {"chat_id": chat, "message_id": mid}
+    if boton and enlace_seguro(boton[1]):
+        datos["reply_markup"] = {"inline_keyboard": [[{"text": boton[0], "url": boton[1]}]]}
+    if envio.get("foto"):
+        datos["caption"] = texto[:1024]
+        return _llamar("editMessageCaption", datos) is not None
+    datos.update({"text": texto[:4000], "disable_web_page_preview": True})
+    return _llamar("editMessageText", datos) is not None
 
 
 def _es_autorizado(m, autorizados):

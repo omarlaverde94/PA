@@ -14,4 +14,5 @@ Pruebas:
 cd scripts
 python f5_prueba_detector.py
 python f5_prueba_seguridad.py
+python f5_prueba_liquidacion.py
 ```

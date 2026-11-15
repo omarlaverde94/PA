@@ -59,6 +59,8 @@ PIN_PARTIDOS_EEUU_CADA = 600  # lista de partidos de NFL/NBA/MLB
 PIN_CUOTAS_CERCA = 90         # cuotas cuando hay partidos en menos de 90 min
 PIN_CUOTAS_LEJOS = 360
 PIN_VIEJA = 300               # cuota de Pinnacle más vieja que esto no se usa
+# Emparejar un partido de Kambi con uno de Pinnacle (ver f5_emparejar.py):
+PIN_MARGEN_INICIO = 10 * 60   # la hora de inicio tiene que coincidir con este margen (segundos)
 
 # --- Detector ------------------------------------------------------------------
 # a) Contra el mercado: Kambi paga al menos esto por encima del precio justo
@@ -70,6 +72,11 @@ UMBRAL_PAR = 0.10             # apuesta que paga más que el precio justo de su 
 UMBRAL_MODELO = 0.30          # contra la escalera estimada de conteo (Poisson)
 UMBRAL_ARBITRAJE = 0.995      # suma de probabilidades de un par menor a esto
 CUOTA_MAX_ALERTA = 10.0       # más arriba casi todo es ruido (pruebas anteriores)
+# Tope de ventaja contra Pinnacle (cuota de Kambi ÷ precio justo de Pinnacle − 1):
+VENTAJA_ALTA = 0.10           # desde aquí la alerta lleva el aviso de "ventaja alta"
+VENTAJA_MAX = 0.15            # por encima de esto no se envía: se registra como "ventaja excesiva"
+AVISO_VENTAJA_ALTA = "⚠️ Ventaja alta: revisa noticias y alineaciones antes de apostar"
+MOTIVO_VENTAJA_EXCESIVA = "descartada por ventaja excesiva"
 # Solo se envían ALERTAS si la cuota ESTIMADA en tu casa cae en el rango vigente y sigue
 # por encima del precio justo (ver f5_estimacion.py). Lo demás solo se registra.
 RANGO_DEFECTO = (1.40, 2.00)
@@ -112,6 +119,23 @@ ALCANZABLE_SEG = 120
 REPETIR_AVISO_SEG = 6 * 3600
 # Tope de avisos por hora; los demás van solo al resumen diario.
 MAX_AVISOS_HORA = 20
+
+# --- Resultados y liquidación (ver f5_liquidacion.py) ------------------------------
+# API-Football (plan gratis, 100 consultas al día): la clave se lee de API_FOOTBALL_KEY
+# y nunca se imprime ni se guarda. Sin clave, el fútbol se liquida con Kambi y ESPN.
+APIFOOT_URL = "https://v3.football.api-sports.io"
+APIFOOT_CADA = 3600           # una misma fecha no se vuelve a consultar antes de esto (segundos)
+ESPN_URL = "https://site.web.api.espn.com/apis/site/v2/sports/"
+# Desde cuándo se intenta liquidar (minutos después del inicio) y cada cuánto se reintenta.
+LIQ_ESPERA_MIN = {"futbol": 115, "mlb": 180, "nfl": 200, "nba": 150}
+LIQ_REINTENTO = 15 * 60
+LIQ_UNA_FUENTE = 6 * 3600     # si a las 6 h solo hay una fuente (sin contradicción), se usa esa
+LIQ_MAX_HORAS = 48            # a las 48 h sin resultado: "sin resultado"
+LIQ_OLVIDAR_DIAS = 7          # alertas más viejas que esto no se intentan liquidar
+# Margen de la hora de inicio al buscar el marcador. Cubre un cambio de horario de una hora
+# y nunca alcanza al juego de otro día ni al segundo juego de una doble jornada de MLB.
+LIQ_MARGEN_INICIO = 75 * 60
+KAMBI_VIVO_CADA = 60          # lectura de marcadores en vivo de Kambi (solo si hay alertas en juego)
 
 # --- Resumen diario y guardado -------------------------------------------------
 RESUMEN_HORA_LOCAL = 23      # 11 p. m. hora local

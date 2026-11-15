@@ -13,6 +13,7 @@ Uso:
 Variables de entorno:
     TELEGRAM_BOT_TOKEN   token del bot (obligatorio para avisar)
     TELEGRAM_CHAT_ID     chat o chats (separados por coma) que reciben avisos
+    API_FOOTBALL_KEY     clave gratis de API-Football para los marcadores de fútbol (opcional)
     F5_DATA              carpeta de datos (por defecto data/fase5)
     F5_GIT_CADA          si está, cada tantos segundos sube los datos con git
     F5_GIT_DIR           carpeta del repositorio de datos donde hacer git (por defecto la raíz)
@@ -29,11 +30,13 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
 import f5_config as C
+import f5_emparejar as EM
 import f5_fuentes as F
 import f5_informe as INF
+import f5_resultados as R
 import f5_telegram as T
 from f5_detector import agregar_pinnacle, contra_mercado, internos
-from f5_estimacion import Estimador
+from f5_estimacion import Estimador, en_rango, nivel_ventaja
 from f5_tarjeta import tarjeta
 from f5_registro import Registro, ahora_iso, iso_a_ts
 
@@ -112,7 +115,7 @@ def ocultar_en_registros():
     si alguna vez aparecieran en los registros (GitHub ya lo hace con los secretos)."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
-    valores = [os.environ.get("TELEGRAM_BOT_TOKEN", "")] + T.chats()
+    valores = [os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("API_FOOTBALL_KEY", "")] + T.chats()
     for v in valores:
         if v:
             print(f"::add-mask::{v}", flush=True)
@@ -145,6 +148,7 @@ class Agente:
         self.pin_futbol_cuando = 0
         self.pin_mk = {}                  # id de liga -> (hora, proposiciones)
         self.pareja = {}                  # id de Kambi -> (liga de Pinnacle, id de partido)
+        self.pin_nombre = {}              # id de Kambi -> partido de Pinnacle con que se comparó
         # Pedidos
         self.pedidos = T.Pedidos()
         self.ultimo_pedido = 0
@@ -156,6 +160,11 @@ class Agente:
         self.ultimo_log = time.time()
         self.errores = Counter()
         self.resumen_hecho = self._cargar_resumen_hecho()
+        # Liquidación automática
+        self.liq = R.Liquidador()
+        self.liq_alertas, self.liq_res = [], {}
+        self.liq_alertas_cuando = 0
+        self.liq_cuando = 0
         self.salir = False
         signal.signal(signal.SIGTERM, self._senal)
         signal.signal(signal.SIGINT, self._senal)
@@ -244,7 +253,11 @@ class Agente:
             self.pin_mk[liga] = (time.time(), F.pinnacle_proposiciones(self.pin_mu.get(liga, []), mk))
 
     def emparejar(self, evid):
-        """Busca el partido de Pinnacle que corresponde a uno de Kambi."""
+        """
+        Busca el partido de Pinnacle que corresponde a uno de Kambi. Tienen que coincidir
+        la hora de inicio (margen corto), la competencia, la categoría (sub-21, reservas,
+        femenino) y los nombres de los dos equipos (ver f5_emparejar.py).
+        """
         if evid in self.pareja:
             return self.pareja[evid]
         info = self.reg.eventos.get(evid)
@@ -252,27 +265,30 @@ class Agente:
             return None
         dep = info["deporte"]
         if dep == "futbol":
-            candidatos = self.pin_futbol
+            partidos = self.pin_futbol
         else:
-            candidatos = [m for liga in C.DEPORTES[dep]["pin_ligas"] for m in self.pin_mu.get(liga, [])
-                          if m.get("type") == "matchup" and not m.get("parentId")]
-        mejor, puntos = None, 0
-        for m in candidatos:
+            partidos = [m for liga in C.DEPORTES[dep]["pin_ligas"] for m in self.pin_mu.get(liga, [])
+                        if m.get("type") == "matchup" and not m.get("parentId")]
+        candidatos = []
+        for m in partidos:
             try:
                 ini = iso_a_ts(m["startTime"].replace("+00:00", "Z"))
             except (KeyError, ValueError):
-                continue
-            if abs(ini - info["_ts"]) > 1800:
                 continue
             h = next((p["name"] for p in m["participants"] if p["alignment"] == "home"), "")
             a = next((p["name"] for p in m["participants"] if p["alignment"] == "away"), "")
             if "(" in h or "(" in a:
                 continue
-            ph, pa = F.parecido(h, info["local"]), F.parecido(a, info["visitante"])
-            if ph >= 0.5 and pa >= 0.5 and ph + pa > puntos:
-                mejor, puntos = m, ph + pa
-        if mejor:
+            candidatos.append({"local": h, "visitante": a, "ts": ini, "liga": m["league"].get("name", ""), "m": m})
+        # En NFL, NBA y MLB la liga de Pinnacle ya es la correcta: no hace falta revisar la competencia
+        elegido = EM.mejor(info, candidatos, C.PIN_MARGEN_INICIO, revisar_competencia=(dep == "futbol"))
+        if elegido:
+            mejor = elegido["m"]
             self.pareja[evid] = (mejor["league"]["id"], mejor["id"])
+            # Se anota con qué partido de Pinnacle se comparó (para poder revisarlo después)
+            self.pin_nombre[evid] = {"pin_partido": f"{elegido['local']} - {elegido['visitante']}",
+                                     "pin_liga": elegido["liga"], "pin_inicio": ahora_iso(elegido["ts"]),
+                                     "pin_id": mejor["id"]}
             return self.pareja[evid]
         return None
 
@@ -379,7 +395,8 @@ class Agente:
                 if h["avisable"] and not a.get("avisable"):
                     # La señal pasó a merecer alerta (por ejemplo, la cuota entró al rango)
                     a.update({k: h[k] for k in ("cuota", "cuota_rb", "rango_rb", "justa_rb", "ventaja_rb",
-                                                  "en_rango", "avisable")})
+                                                  "en_rango", "avisable", "ventaja", "ventaja_pin", "ventaja_alta",
+                                                  "descartada")})
                     a["avisable_desde"] = ahora_iso(ahora)
                     self.avisar(info, [a])
                 continue
@@ -409,6 +426,8 @@ class Agente:
                 "cuota_max": h["cuota"], "pin_hora": ahora_iso(hora_pin) if hora_pin else None,
                 "avisado": False,
             }
+            if h.get("regla") == "mercado" or h.get("pin_justa"):
+                extra.update(self.pin_nombre.get(evid, {}))
             self.reg.alerta_abre(h, extra)
             para_avisar.append(self.reg.alertas_abiertas[h["clave"]])
         self.avisar(info, para_avisar)
@@ -457,18 +476,23 @@ class Agente:
         # Solo alertas con la cuota ESTIMADA en tu casa dentro del rango vigente y por encima del justo.
         # Todo lo demás queda registrado para el resumen diario y el informe final.
         enviar = [a for a in alertas if a.get("avisable")
-                  and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG]
+                  and ahora - self.reg.avisados.get(a["clave"], 0) > C.REPETIR_AVISO_SEG
+                  and self.revisar_antes_de_enviar(info, a)]
         if not enviar or len(self.avisos_hora) >= C.MAX_AVISOS_HORA:
             return
         enviar.sort(key=lambda a: -(a.get("ventaja_rb") or 0))
-        texto = "\n\n".join(INF.texto_corto(a) for a in enviar[:5])
-        if len(enviar) > 5:
-            texto += f"\n\n(+{len(enviar) - 5} más en este partido)"
+        texto = INF.texto_mensaje(enviar[:5], len(enviar) - 5)
         imagen = tarjeta([INF.bloque_tarjeta(a) for a in enviar[:5]])
         url = self.est.enlace_partido(info.get("id"))
         boton = (f"Abrir en {self.est.casa}", url) if url else None
-        ids = T.enviar_alerta(texto, imagen, boton)
+        envios = T.enviar_alerta(texto, imagen, boton)
+        ids = [e["id"] for e in envios]
         if ids:
+            for e in envios:
+                # Para editar el mensaje cuando se liquide: qué alertas lleva y cómo se envió
+                self.reg.envios.append({**e, "alertas": [a["id"] for a in enviar[:5]],
+                                        "resto": len(enviar) - 5 if len(enviar) > 5 else 0,
+                                        "ev": info.get("id"), "ts": ahora})
             for mid in ids:
                 self.reg.mensajes[str(mid)] = [a["id"] for a in enviar]
             self.reg.mensajes["ultimo"] = [a["id"] for a in enviar]
@@ -481,6 +505,26 @@ class Agente:
             # Guardar y subir los datos enseguida: así ninguna alerta avisada se pierde si la tanda se corta
             self.ultimo_guardado = 0
             self.ultimo_git = 0
+
+    def revisar_antes_de_enviar(self, info, a):
+        """
+        Última revisión justo antes de enviar, con la cuota más reciente de Kambi:
+        la apuesta sigue abierta, la cuota estimada en tu casa sigue dentro del rango
+        vigente y la ventaja contra Pinnacle no pasa del tope. Si algo falla, no se envía
+        (queda registrada con el motivo).
+        """
+        f = self.filas.get(info["id"], {}).get(a["k"])
+        if not f or f["st"] != "OPEN":
+            a["no_enviada"] = "la apuesta ya no estaba abierta al momento de enviar"
+            return False
+        est, _ = self.est.estimar(f, info["deporte"])
+        if not en_rango(est) or not en_rango(a.get("cuota_rb")):
+            a["no_enviada"] = "la cuota estimada salió del rango justo antes de enviar"
+            return False
+        if nivel_ventaja(a.get("ventaja_pin")) == "excesiva":
+            a["descartada"] = C.MOTIVO_VENTAJA_EXCESIVA
+            return False
+        return True
 
     # ------------------------------------------------------------------ pedidos
     def atender_pedidos(self):
@@ -605,6 +649,9 @@ class Agente:
                 f"• Cuotas nuevas registradas: {self.reg.contador['nuevas']}; cambios: {self.reg.contador['cambios']}.\n"
                 f"• Errores abiertos ahora: {len(self.reg.alertas_abiertas)}.\n"
                 f"• Rango de alertas: cuota estimada en tu casa entre {C.texto_rango()}.\n"
+                f"• Resultados: Kambi en vivo y ESPN; API-Football "
+                f"{('con aviso: ' + self.liq.apifoot.aviso) if self.liq.apifoot.aviso else ('activa' if self.liq.apifoot.activa() else 'sin clave')}"
+                f" · mensajes por editar: {len(self.reg.envios)}.\n"
                 f"• Deportes con aviso: {foco}{' (en pausa)' if self.pausa else ''}"
                 f"{' — APAGADO (escribe encender)' if self.apagado() else ''}.")
 
@@ -667,6 +714,59 @@ class Agente:
         except OSError as e:
             self.log("git falló:", type(e).__name__)
 
+    # ------------------------------------------------------------------ liquidación
+    def liquidar(self, forzar=False):
+        """
+        Liquida sola cada alerta cuando su partido termina (con reintentos; a las 48 h queda
+        "sin resultado") y edita el mensaje original de Telegram con el resultado.
+        Mientras hay partidos con alertas en juego, lee el marcador en vivo de Kambi.
+        """
+        ahora = time.time()
+        if forzar or ahora - self.liq_alertas_cuando >= 300:
+            self.liq_alertas_cuando = ahora
+            self.reg.alertas_f.volcar()
+            self.liq_alertas = INF.leer_alertas()
+            self.liq_res = R.leer_resultados()
+        self.liq.kambi.leer(self.liq.en_juego(self.liq_alertas, self.liq_res))
+        if not forzar and ahora - self.liq_cuando < 120:
+            return
+        self.liq_cuando = ahora
+        nuevas = self.liq.ciclo(self.liq_alertas, self.liq_res, R.catalogo, forzar=forzar)
+        if nuevas:
+            R.guardar_resultados(self.liq_res)
+            self.log(f"alertas liquidadas: {len(nuevas)}")
+            self.ultimo_guardado = 0
+        self.liq.guardar()
+        self.editar_mensajes()
+
+    def editar_mensajes(self):
+        """Agrega ✅ Ganada / ❌ Perdida / ↩️ Nula al mensaje original de cada alerta liquidada."""
+        if not self.reg.envios:
+            return
+        por_id = {a["id"]: a for a in self.liq_alertas}
+        quedan = []
+        for e in self.reg.envios:
+            hechas = e.setdefault("editadas", [])
+            listas = [i for i in e["alertas"] if i in self.liq_res and i not in hechas]
+            if not listas or not all(i in por_id for i in e["alertas"]):
+                # Nada nuevo. Se deja de esperar a los 4 días.
+                if time.time() - e.get("ts", 0) < 4 * 86400:
+                    quedan.append(e)
+                continue
+            texto = INF.texto_mensaje([por_id[i] for i in e["alertas"]], e.get("resto", 0), self.liq_res)
+            url = self.est.enlace_partido(e.get("ev"))
+            if T.editar_alerta(e, texto, (f"Abrir en {self.est.casa}", url) if url else None):
+                hechas += listas
+                e.pop("fallos", None)
+            else:
+                e["fallos"] = e.get("fallos", 0) + 1
+            pendientes = [i for i in e["alertas"] if i not in hechas]
+            if pendientes and e.get("fallos", 0) < 5:
+                quedan.append(e)
+            elif e.get("fallos", 0) >= 5:
+                self.log("no se pudo editar un mensaje de alerta (se deja de intentar)")
+        self.reg.envios = quedan
+
     def resumen_si_toca(self):
         ahora = col()
         hoy = ahora.date().isoformat()
@@ -674,8 +774,7 @@ class Agente:
             self.resumen_hecho = hoy
             (C.DATA / "ultimo_resumen.txt").write_text(hoy)
             try:
-                import f5_resultados
-                f5_resultados.liquidar()
+                self.liquidar(forzar=True)
             except Exception:  # los resultados no deben tumbar al agente
                 self.log("no se pudieron bajar resultados:", error_corto())
             T.enviar(INF.resumen_diario(self.reg, ahora.date()))
@@ -729,6 +828,7 @@ class Agente:
                 self.leer_listas()
                 self.lecturas_completas()
                 self.revisar_cierres()
+                self.liquidar()
                 self.resumen_si_toca()
                 self.guardar()
                 if time.time() - self.ultimo_log >= 600:
