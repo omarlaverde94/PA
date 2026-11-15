@@ -2,7 +2,7 @@
 Fase 5: imagen tipo tarjeta para cada alerta (limpia y fácil de leer en el celular).
 
 Muestra lo mismo que el texto corto: apuesta, partido y hora, cuánto paga tu
-casa (estimado) contra cuánto debería pagar, ventaja y confianza. Sin logos
+casa contra cuánto debería pagar, ventaja, confianza y la hora en que se leyó la cuota. Sin logos
 ni marcas. Si no se puede dibujar (falta Pillow o una fuente), devuelve None y
 el agente manda solo el texto.
 """
@@ -52,7 +52,7 @@ def _partir(dibujo, texto, fuente, ancho):
 def tarjeta(bloques, pie="PRUEBA · no apostar · verifica la cuota real antes de apostar"):
     """
     bloques: lista de dicts con apuesta, partido, hora, casa, paga, justa, ventaja,
-    confianza. Devuelve los bytes PNG o None.
+    confianza y (opcional) leida. Devuelve los bytes PNG o None.
     """
     if Image is None or not bloques:
         return None
@@ -65,7 +65,7 @@ def tarjeta(bloques, pie="PRUEBA · no apostar · verifica la cuota real antes d
         partes = []
         for b in bloques:
             titulo = _partir(prueba, b["apuesta"], f_titulo, interior - 40)
-            partes.append((b, titulo, 48 + 58 * len(titulo) + 50 + 110 + 80 + 40))
+            partes.append((b, titulo, 48 + 58 * len(titulo) + 50 + 110 + 80 + 40 + (48 if b.get("leida") else 0)))
         alto = MARGEN + 50 + sum(p[2] + 28 for p in partes) + 40 + MARGEN
         img = Image.new("RGB", (ANCHO, alto), COLOR["fondo"])
         d = ImageDraw.Draw(img)
@@ -99,6 +99,8 @@ def tarjeta(bloques, pie="PRUEBA · no apostar · verifica la cuota real antes d
             w2 = d.textlength(chip2, font=f_normal) + 48
             d.rounded_rectangle((x + w1 + 16, yy, x + w1 + 16 + w2, yy + 56), radius=28, fill=COLOR["gris_suave"])
             d.text((x + w1 + 40, yy + 10), chip2, font=f_normal, fill=COLOR.get(b["confianza"], COLOR["texto"]))
+            if b.get("leida"):
+                d.text((x, yy + 76), f"Cuota leída a las {b['leida']} (hora Colombia)", font=f_chico, fill=COLOR["suave"])
             y += h + 28
         d.text((MARGEN, y + 4), pie, font=f_chico, fill=COLOR["suave"])
         salida = io.BytesIO()

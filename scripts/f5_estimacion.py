@@ -82,9 +82,17 @@ def en_rango(cuota):
 
 
 class Estimador:
-    def __init__(self, ruta=None):
+    """
+    Prueba nueva (cuotas reales): si la API de tu casa está configurada (CASA_API_URL),
+    la cuota leída YA es la real, así que no se estima nada: "cuota_rb" es la cuota real
+    y no hay rango del 80 %. La tabla solo se usa si no hay API (modo viejo, ya no se usa
+    para alertas). Del archivo se siguen leyendo el nombre de la casa y el enlace.
+    """
+
+    def __init__(self, ruta=None, real=None):
         ruta = ruta or os.environ.get("F5_AJUSTE") or str(C.DATA / "ajuste_cuotas.json.gz")
         self.tabla, self.casa, self.ok, self.enlace = {}, "tu casa de apuestas", False, None
+        self.real = C.casa_configurada() if real is None else real
         try:
             with gzip.open(ruta, "rt", encoding="utf-8") as fh:
                 d = json.load(fh)
@@ -96,6 +104,8 @@ class Estimador:
             self.ok = bool(self.tabla)
         except (OSError, ValueError, KeyError, EOFError):
             pass
+        if self.real:
+            self.ok = True
 
     def enlace_partido(self, evid):
         """Enlace para abrir el partido en tu casa (mismo identificador de Kambi), o None."""
@@ -111,8 +121,11 @@ class Estimador:
         return None
 
     def estimar(self, f, deporte):
-        """(cuota estimada, rango donde cae el 80% de los casos) o (None, None)."""
-        t = self._fila(f, deporte) if self.ok else None
+        """(cuota estimada, rango donde cae el 80% de los casos) o (None, None).
+        Con cuotas reales: (la cuota real, None)."""
+        if self.real:
+            return (round(f["odds"], 2), None) if f.get("odds") else (None, None)
+        t = self._fila(f, deporte) if self.tabla else None
         if not t:
             return None, None
         return round(f["odds"] * t["razon"], 2), (round(f["odds"] * t["bajo"], 2), round(f["odds"] * t["alto"], 2))
@@ -123,7 +136,7 @@ class Estimador:
         est, rango80 = self.estimar(f, deporte) if f else (None, None)
         vp = ventaja_pinnacle(h)
         nivel = nivel_ventaja(vp)
-        salida = {"casa": self.casa, "cuota_rb": est, "rango_rb": rango80, "justa_rb": None,
+        salida = {"casa": self.casa, "cuota_rb": est, "real": self.real, "rango_rb": rango80, "justa_rb": None,
                   "ventaja_rb": None, "avisable": False, "en_rango": en_rango(est),
                   "ventaja_pin": vp, "ventaja_alta": nivel == "alta",
                   "descartada": C.MOTIVO_VENTAJA_EXCESIVA if nivel == "excesiva" else None}

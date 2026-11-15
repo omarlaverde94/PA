@@ -1,5 +1,5 @@
 """
-Fase 5: detector de errores de cuota en Kambi.
+Fase 5: detector de errores de cuota en tu casa (plataforma Kambi).
 
 Dos tipos de error:
 
@@ -25,6 +25,11 @@ from collections import defaultdict
 
 import f5_config as C
 from f5_fuentes import es_ganador, mismo_jugador, proposicion_kambi
+
+def _casa():
+    """Nombre de la casa en las explicaciones (lo pone el agente al arrancar)."""
+    return C.NOMBRE_CASA[0]
+
 
 # Estadísticas de conteo chico en las que se usa el modelo de Poisson.
 CONTEO = {"touchdown", "touchdown passe", "interception", "home run", "rbi", "run",
@@ -109,7 +114,7 @@ def internos(filas, ev):
                 out.append(_hallazgo(
                     sospechosa, "interno", "arbitraje", justa,
                     f"Las {len(fs)} opciones del mismo mercado suman {suma:.1%}: apostando a todas se ganaría siempre.",
-                    "Kambi paga tanto por todas las opciones de este mercado que juntas suman menos de 100%. "
+                    f"{_casa()} paga tanto por todas las opciones de este mercado que juntas suman menos de 100%. "
                     "Eso no puede pasar a propósito: una de las cuotas está mal, probablemente la que cambió última.",
                     "alta", {"ks_otros": [x["k"] for x in fs if x is not sospechosa]}))
 
@@ -139,8 +144,8 @@ def internos(filas, ev):
             if f["odds"] / justa - 1 >= C.UMBRAL_PAR and f["odds"] <= C.CUOTA_MAX_ALERTA:
                 out.append(_hallazgo(
                     f, "interno", "par", justa,
-                    f"El más/menos de Kambi en la misma línea ({_dir_txt(d, t)}) da un precio justo de {justa:.2f}.",
-                    f"Kambi ofrece esta misma apuesta en otro mercado (el de más/menos) a un precio que, sin margen, "
+                    f"El más/menos de {_casa()} en la misma línea ({_dir_txt(d, t)}) da un precio justo de {justa:.2f}.",
+                    f"{_casa()} ofrece esta misma apuesta en otro mercado (el de más/menos) a un precio que, sin margen, "
                     f"equivale a {justa:.2f}. Aquí paga {f['odds']:.2f}, bastante más que su propio precio justo.",
                     "media"))
 
@@ -165,7 +170,7 @@ def internos(filas, ev):
                         facil, "interno", "escalera", dificil["odds"],
                         f"\"{_dir_txt(d, t_facil)}\" paga {facil['odds']:.2f} y \"{_dir_txt(d, t_dif)}\" "
                         f"(más difícil) paga {dificil['odds']:.2f}.",
-                        f"Kambi paga más por \"{_dir_txt(d, t_facil)}\" que por \"{_dir_txt(d, t_dif)}\", "
+                        f"{_casa()} paga más por \"{_dir_txt(d, t_facil)}\" que por \"{_dir_txt(d, t_dif)}\", "
                         f"que es más difícil de cumplir. Eso es imposible si los precios estuvieran bien: "
                         f"el precio justo tiene que ser menor a {dificil['odds']:.2f}.",
                         "alta", {"cota": True, "k_ref": dificil["k"]}))
@@ -186,9 +191,9 @@ def internos(filas, ev):
                     if f["odds"] / justa - 1 >= C.UMBRAL_MODELO and f["odds"] <= C.CUOTA_MAX_ALERTA:
                         out.append(_hallazgo(
                             f, "interno", "modelo", justa,
-                            f"El más/menos de Kambi en {t0} da {justo_ge[t0]:.0%} y con eso "
+                            f"El más/menos de {_casa()} en {t0} da {justo_ge[t0]:.0%} y con eso "
                             f"\"{t} o más\" debería rondar {p:.0%}.",
-                            f"Con la línea principal de Kambi para esta estadística, lo esperable es que "
+                            f"Con la línea principal de {_casa()} para esta estadística, lo esperable es que "
                             f"\"{t} o más\" pague cerca de {justa:.2f}, pero paga {f['odds']:.2f}. Es una estimación "
                             f"con un modelo sencillo, así que es menos segura que las otras reglas.",
                             "baja"))
@@ -258,7 +263,7 @@ def contra_mercado(filas, ev, pin_props):
         out.append(_hallazgo(
             f, "mercado", "mercado", justa,
             f"Pinnacle (sin margen) da {justa:.2f}; su cuota publicada es {p['cuota']:.2f}.",
-            f"Kambi paga {f['odds']:.2f} y el precio justo según Pinnacle, la casa más afinada del mercado "
-            f"y que no usa Kambi, es {justa:.2f}. Kambi paga {ventaja:.0%} más de lo que vale la apuesta." + aviso,
+            f"{_casa()} paga {f['odds']:.2f} y el precio justo según Pinnacle, la casa más afinada del mercado "
+            f"y que no usa la plataforma Kambi, es {justa:.2f}. {_casa()} paga {ventaja:.0%} más de lo que vale la apuesta." + aviso,
             confianza, {"pin_cuota": round(p["cuota"], 3)}))
     return out

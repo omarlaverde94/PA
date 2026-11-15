@@ -16,13 +16,29 @@ DATA = Path(os.environ.get("F5_DATA", RAIZ / "data" / "fase5"))
 # Hora local de los avisos y del resumen diario (UTC-5).
 HORA_LOCAL = timezone(timedelta(hours=-5))
 
-# --- Kambi ------------------------------------------------------------------------
-# Cuotas públicas de Kambi por medio de Paf (la referencia principal).
-# Unibet se usa solo para confirmar un error antes de avisar.
+# --- Cuotas de tu casa ----------------------------------------------------------------
+# Prueba nueva: solo cuotas REALES de tu casa, leídas de su API pública de cuotas
+# (plataforma Kambi, mercado CO). La dirección base NO está en el código: se lee del
+# secreto CASA_API_URL (sin "/" al final). Sin ella el agente no lee ni avisa nada.
+CASA_API_URL = os.environ.get("CASA_API_URL", "").strip().rstrip("/")
+CASA_PARAMS = {"lang": "es_ES", "market": "CO", "useCombined": "true"}
+# Otras casas de Kambi (solo como respaldo para marcadores en vivo si hiciera falta).
 KAMBI_URL = "https://eu-offering-api.kambicdn.com/offering/v2018/{op}/{ruta}"
 KAMBI_PARAMS = {"lang": "es_ES", "market": "GB", "useCombined": "true"}
-KAMBI_PRINCIPAL = "paf"
-KAMBI_CONFIRMA = "ub"
+KAMBI_PRINCIPAL = "casa"      # "casa" = la API de tu casa (CASA_API_URL)
+# Nombre de la casa en las explicaciones (el agente pone el nombre real al arrancar).
+NOMBRE_CASA = ["tu casa"]
+
+
+def casa_configurada():
+    return CASA_API_URL.startswith("https://")
+
+
+# Relectura de la cuota justo antes de enviar una alerta: si cambió (o ya no está
+# abierta), la alerta NO se envía y queda registrada con el motivo.
+# Seguimiento: minutos después de cada alerta enviada en que se vuelve a leer la cuota
+# para medir si se mantuvo (solo antes del inicio del partido).
+SEGUIMIENTO_MIN = (2, 5, 15)
 # Pausa mínima entre dos consultas a Kambi (segundos). Con esto el agente
 # hace en promedio menos de una consulta por segundo.
 KAMBI_PAUSA = float(os.environ.get("F5_KAMBI_PAUSA", "0.8"))
