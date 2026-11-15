@@ -13,7 +13,11 @@ hay estimación y el agente no envía alertas (solo registra).
 Con la estimación se decide si una señal merece alerta:
 - la cuota estimada en tu casa tiene que estar dentro del rango de alertas
   (por defecto 1.40 a 2.00; se cambia con el comando "rango"), y
-- tiene que seguir por encima del precio justo según la regla que la detectó.
+- tiene que seguir por encima del precio justo según la regla que la detectó, y
+- la ventaja contra Pinnacle (cuota de Kambi ÷ precio justo de Pinnacle − 1, la misma
+  medida de siempre) no puede pasar de 15 %: más que eso casi siempre es un error de
+  emparejamiento o una noticia que el mercado ya sabe. Esas se registran como
+  "descartada por ventaja excesiva". De 10 % a 15 % se envían con un aviso.
 """
 import gzip
 import json
@@ -52,6 +56,29 @@ def grupo(f):
     if f["tipo"] in ("Handicap", "Asian Handicap") and f.get("nsal") == 2:
         return "handicap"
     return "otros"
+
+
+def ventaja_pinnacle(h):
+    """Cuánto paga Kambi por encima del precio justo de Pinnacle (la medida de siempre), o None
+    si Pinnacle no tiene esa apuesta. En las de "mercado" es la misma ventaja de la detección."""
+    if h.get("regla") == "mercado" and h.get("ventaja") is not None:
+        return h["ventaja"]
+    if h.get("pin_justa") and h.get("cuota"):
+        return round(h["cuota"] / h["pin_justa"] - 1, 4)
+    return None
+
+
+def nivel_ventaja(v):
+    """'normal' (menos de 10 %), 'alta' (10 % a 15 %) o 'excesiva' (más de 15 %)."""
+    if v is None or v < C.VENTAJA_ALTA:
+        return "normal"
+    if v <= C.VENTAJA_MAX:
+        return "alta"
+    return "excesiva"
+
+
+def en_rango(cuota):
+    return bool(cuota) and C.RANGO_PREFERIDO[0] <= cuota <= C.RANGO_PREFERIDO[1]
 
 
 class Estimador:
@@ -94,9 +121,12 @@ class Estimador:
         """Campos de la señal medidos con la cuota estimada en tu casa."""
         f = por_k.get(h["k"])
         est, rango80 = self.estimar(f, deporte) if f else (None, None)
+        vp = ventaja_pinnacle(h)
+        nivel = nivel_ventaja(vp)
         salida = {"casa": self.casa, "cuota_rb": est, "rango_rb": rango80, "justa_rb": None,
-                  "ventaja_rb": None, "avisable": False,
-                  "en_rango": bool(est and C.RANGO_PREFERIDO[0] <= est <= C.RANGO_PREFERIDO[1])}
+                  "ventaja_rb": None, "avisable": False, "en_rango": en_rango(est),
+                  "ventaja_pin": vp, "ventaja_alta": nivel == "alta",
+                  "descartada": C.MOTIVO_VENTAJA_EXCESIVA if nivel == "excesiva" else None}
         if not est:
             return salida
         regla, justa, ok = h["regla"], h.get("justa"), False
@@ -114,5 +144,5 @@ class Estimador:
         if justa:
             salida["justa_rb"] = round(justa, 3)
             salida["ventaja_rb"] = round(est / justa - 1, 4)
-        salida["avisable"] = bool(ok and salida["en_rango"])
+        salida["avisable"] = bool(ok and salida["en_rango"] and nivel != "excesiva")
         return salida

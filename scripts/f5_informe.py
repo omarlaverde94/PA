@@ -78,6 +78,10 @@ def texto_alerta(info, alertas, total):
             f"• Detectado: {hora_col(a.get('avisable_desde') or a['detectado']).strftime('%d/%m %H:%M:%S')} (hora local)",
             f"• Explicación: {explicacion}",
         ]
+        if a.get("ventaja_alta"):
+            lineas.append(f"• {C.AVISO_VENTAJA_ALTA}")
+        if a.get("pin_partido"):
+            lineas.append(f"• Comparado con Pinnacle: {a['pin_partido']} ({a.get('pin_liga') or '—'})")
         if a.get("cerrada"):
             lineas.append(f"• Ahora: {_estado(a)}")
     if total > len(alertas):
@@ -190,6 +194,8 @@ def orden(a):
 
 
 def _estado(a):
+    if a.get("descartada"):
+        return a["descartada"]
     if a.get("cerrada"):
         if a.get("motivo") == "empezó el partido":
             return "no se corrigió antes del inicio"
@@ -203,6 +209,8 @@ def _resultado(a, res):
     r = res.get(a["id"])
     if r and r.get("gana") is not None:
         return f"{'GANADA' if r['gana'] else 'perdida'} ({r['unidades']:+.2f} u)"
+    if r and r.get("estado") == "nula":
+        return "nula (se devuelve lo apostado)"
     if r:
         return "sin resultado (" + r.get("detalle", "no disponible") + ")"
     try:
@@ -234,12 +242,40 @@ def texto_corto(a, marca="🟢"):
     paga = a.get("cuota_rb") or a["cuota"]
     justa = _justa(a)
     ventaja = a.get("ventaja_rb") if a.get("ventaja_rb") is not None else (paga / justa - 1 if justa else None)
-    return "\n".join([
+    lineas = [
         f"{marca} {a.get('apuesta', '')}",
         f"{a.get('partido', '')} · {_hora_corta(a)}",
         f"{casa} paga {paga:.2f} → debería pagar " + (f"{justa:.2f}" if justa else "—"),
         (f"Ventaja {ventaja:+.1%}" if ventaja is not None else "Ventaja —") + f" · Confianza {a.get('confianza', '—')}",
-    ])
+    ]
+    if a.get("ventaja_alta"):
+        lineas.append(C.AVISO_VENTAJA_ALTA)
+    return "\n".join(lineas)
+
+
+def texto_mensaje(alertas, resto=0, res=None):
+    """El texto del mensaje de alerta (hasta 5 apuestas del mismo partido). Con `res`, debajo
+    de cada apuesta ya liquidada va su resultado: así se edita el mensaje original."""
+    bloques = []
+    for a in alertas:
+        t = texto_corto(a)
+        r = (res or {}).get(a["id"])
+        if r:
+            t += "\n" + linea_resultado(r)
+        bloques.append(t)
+    texto = "\n\n".join(bloques)
+    if resto > 0:
+        texto += f"\n\n(+{resto} más en este partido)"
+    return texto
+
+
+def linea_resultado(r):
+    """"✅ Ganada", "❌ Perdida", "↩️ Nula" o "Sin resultado", con el marcador si lo hay."""
+    estado = r.get("estado") or ("sin resultado" if r.get("gana") is None else ("ganada" if r["gana"] else "perdida"))
+    marca = {"ganada": "✅ Ganada", "perdida": "❌ Perdida", "nula": "↩️ Nula"}.get(estado, "⏳ Sin resultado")
+    if estado == "sin resultado":
+        return f"{marca} ({r.get('detalle') or 'no disponible'})"
+    return marca + (f" · {r['detalle']}" if r.get("detalle") else "")
 
 
 def bloque_tarjeta(a):

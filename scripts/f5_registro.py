@@ -77,6 +77,7 @@ class Registro:
         self.alertas_abiertas = {}
         self.avisados = {}       # clave -> hora del último aviso
         self.mensajes = {}       # número de mensaje de Telegram -> ids de alertas (para "más")
+        self.envios = []         # mensajes de alerta enviados que falta editar con el resultado
         self.contador = {"cambios": 0, "nuevas": 0}
         self._cargar()
 
@@ -93,6 +94,7 @@ class Registro:
         self.alertas_abiertas = e.get("alertas_abiertas", {})
         self.avisados = e.get("avisados", {})
         self.mensajes = e.get("mensajes", {})
+        self.envios = e.get("envios", [])
 
     def guardar(self):
         for a in (self.catalogo, self.cambios, self.eventos_f, self.alertas_f):
@@ -106,6 +108,7 @@ class Registro:
              "alertas_abiertas": self.alertas_abiertas,
              "avisados": {k: v for k, v in self.avisados.items() if v > time.time() - 86400},
              "mensajes": dict(list(self.mensajes.items())[-300:]),
+             "envios": self.envios[-400:],
              "guardado": ahora_iso()}
         tmp = self.dir / "estado.json.gz.tmp"
         with gzip.open(tmp, "wt", encoding="utf-8") as fh:
@@ -187,7 +190,8 @@ class Registro:
                "alcanzable": dur >= C.ALCANZABLE_SEG}
         # Lo que cambió mientras estuvo abierta (aviso enviado, cuota estimada, etc.)
         for campo in ("avisado", "avisado_ts", "avisable", "avisable_desde", "cuota_max", "cuota_rb",
-                      "rango_rb", "justa_rb", "ventaja_rb", "en_rango"):
+                      "rango_rb", "justa_rb", "ventaja_rb", "en_rango", "ventaja_pin", "ventaja_alta",
+                      "descartada", "no_enviada"):
             if campo in a:
                 reg[campo] = a[campo]
         self.alertas_f.agregar(reg)

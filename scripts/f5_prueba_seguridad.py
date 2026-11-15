@@ -60,6 +60,7 @@ print("Comandos fijos: OK")
 enviados = []
 fotos = []    # (chat, texto corto, botón) de cada imagen enviada
 botones = []  # botón (o None) de cada mensaje enviado
+editados = []  # (chat, número de mensaje, texto nuevo, botón) de cada mensaje editado
 cola = []
 _n_msj = [1000]
 
@@ -76,6 +77,10 @@ def falso_llamar(metodo, datos=None, timeout=40, archivos=None):
         botones.append(datos.get("reply_markup"))
         _n_msj[0] += 1
         return {"message_id": _n_msj[0]}
+    if metodo in ("editMessageCaption", "editMessageText"):
+        editados.append((str(datos["chat_id"]), datos["message_id"], datos.get("caption") or datos.get("text"),
+                         datos.get("reply_markup")))
+        return {"message_id": datos["message_id"]}
     if metodo == "getUpdates":
         res, cola[:] = list(cola), []
         return res
@@ -170,8 +175,31 @@ with contextlib.redirect_stdout(salida):
     assert len(enviados) == antes, "se envió una alerta que no la merecía"
     info["id"] = 1028811658
     ag.est.enlace = "https://casa.example/?page=sportsbook#event/{id}"
-    alerta = dict(base, avisable=True, id="al-1")
+    alerta = dict(base, avisable=True, id="al-1", ev=1028811658)
     ag.reg.alertas_abiertas[alerta["clave"]] = alerta  # como en la vida real: la alerta está en el registro
+    # Revisión justo antes de enviar: se mira la cuota más reciente de Kambi
+    ag.est.tabla, ag.est.ok = {"*|*|*": {"razon": 0.99, "bajo": 0.98, "alto": 1.0, "n": 100}}, True
+    fila_k = {"k": 1, "ev": 1028811658, "odds": 2.30, "st": "OPEN", "crit": "Total Points", "tipo": "Over/Under",
+              "otype": "OT_OVER", "nsal": 2, "part": None, "line": 45.5}
+    ag.filas[1028811658] = {1: fila_k}
+    ag.avisar(info, [alerta])
+    assert len(enviados) == antes and "rango" in alerta.get("no_enviada", ""), \
+        "se envió una alerta cuya cuota ya había salido del rango"
+    fila_k["st"] = "SUSPENDED"
+    ag.avisar(info, [alerta])
+    assert len(enviados) == antes, "se envió una alerta de una apuesta suspendida"
+    fila_k.update(odds=1.95, st="OPEN")
+    # Tope de ventaja: más de 15 % contra Pinnacle no se envía y queda anotado el motivo
+    excesiva = dict(alerta, clave="mercado:8", id="al-8", ventaja_pin=0.2)
+    ag.avisar(info, [excesiva])
+    assert len(enviados) == antes and excesiva["descartada"] == "descartada por ventaja excesiva"
+    # De 10 % a 15 %: se envía con el aviso de ventaja alta
+    alta = dict(alerta, clave="mercado:7", id="al-7", ventaja_pin=0.12, ventaja_alta=True)
+    ag.avisar(info, [alta])
+    assert len(enviados) == antes + 1 and enviados[-1][1].split("\n")[4] == \
+        "⚠️ Ventaja alta: revisa noticias y alineaciones antes de apostar"
+    ag.avisos_hora.clear()
+    enviados.pop(), botones.pop(), fotos and fotos.pop(), ag.reg.envios.clear()
     ag.avisar(info, [alerta])
     corto = enviados[-1][1]
     import f5_tarjeta
@@ -181,8 +209,25 @@ with contextlib.redirect_stdout(salida):
     assert len(corto.split("\n")) == 4, "la alerta corta debe tener 4 líneas"
     boton = (botones[-1] or {}).get("inline_keyboard", [[None]])[0][0]
     assert boton and boton["url"].endswith("#event/1028811658"), "falta el botón con el enlace al partido"
-    # "más" respondiendo a la alerta: explicación completa; de otra persona: nada
+    # Al liquidar, se edita el mensaje original con el resultado (y se conserva el botón)
     mid = _n_msj[0]
+    assert ag.reg.envios and ag.reg.envios[-1]["id"] == mid and "chat" in ag.reg.envios[-1]
+    assert MI_CHAT not in str(ag.reg.envios), "se guardó el número de chat"
+    ag.liq_alertas = [alerta]
+    for estado, marca in (("ganada", "✅ Ganada"), ("perdida", "❌ Perdida"), ("nula", "↩️ Nula")):
+        ag.reg.envios[:] = [dict(ag.reg.envios[-1] if ag.reg.envios else envio_0, editadas=[])]
+        envio_0 = dict(ag.reg.envios[-1])
+        ag.liq_res = {"al-1": {"estado": estado, "gana": {"ganada": True, "perdida": False}.get(estado),
+                               "unidades": 0.0, "detalle": "marcador 30-20"}}
+        ag.editar_mensajes()
+        chat_e, mid_e, texto_e, boton_e = editados[-1]
+        assert chat_e == MI_CHAT and mid_e == mid and texto_e.startswith(corto), "no se editó el mensaje original"
+        assert texto_e.split("\n")[4].startswith(marca) and boton_e, (estado, texto_e)
+    assert not ag.reg.envios, "un mensaje ya editado no debe quedar pendiente"
+    n_edit = len(editados)
+    ag.editar_mensajes()
+    assert len(editados) == n_edit
+    # "más" respondiendo a la alerta: explicación completa; de otra persona: nada
     cola[:] = [msg(30, EXTRANO, "private", "más", responde_a=mid), msg(31, MI_CHAT, "private", "más", responde_a=mid)]
     ag.ultimo_pedido = 0
     ag.atender_pedidos()
@@ -208,10 +253,11 @@ with contextlib.redirect_stdout(salida):
     # un enlace que no sea https no se usa
     assert T.enviar_alerta("x", None, ("b", "javascript:alert(1)")) and botones[-1] is None
     ag.reg.alertas_abiertas.clear()
+print("Revisión antes de enviar, tope de ventaja y edición del mensaje con el resultado: OK")
 print("Alertas cortas con imagen y botón, \"más\" solo para tu chat, solo si merecen alerta; comando rango seguro: OK")
 print("Resumen y \"detalle\" listan los errores (15 más fuertes y cuántos faltan): OK")
 
-destinos = {c for c, _ in enviados} | {c for c, _, _ in fotos}
+destinos = {c for c, _ in enviados} | {c for c, _, _ in fotos} | {c for c, _, _, _ in editados}
 assert destinos == {MI_CHAT}, f"se envió a un chat no autorizado: {destinos}"
 assert ag.foco == {"nfl"} and ag.foco_hasta, "el pedido de enfoque no se aplicó"
 respuestas = [t for _, t in enviados]

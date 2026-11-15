@@ -9,6 +9,9 @@
 #   envío falla, el agente avisa por Telegram y reintenta cada 5 min.
 # - La tabla para estimar la cuota de tu casa se lee del repositorio privado
 #   (data/fase5/ajuste_cuotas.json.gz en main); sin ella no se envían alertas.
+# - Cada alerta se liquida sola cuando termina su partido (marcador en vivo de Kambi,
+#   API-Football y ESPN) y el mensaje original de Telegram se edita con el resultado.
+#   API-Football es opcional: si no existe el secreto API_FOOTBALL_KEY, se usa lo demás.
 # - Después de 7 días desde la primera corrida, el agente no hace nada más.
 #
 # Seguridad:
@@ -17,8 +20,8 @@
 # - Permisos mínimos: este repositorio solo se lee.
 # - Herramientas fijas: acciones fijadas por SHA completo, Ubuntu y Python con
 #   versión exacta y paquetes de Python con huella verificada.
-# - Claves solo como secretos: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_REPO
-#   y PRIVATE_REPO_TOKEN. Nunca en este archivo ni en los registros.
+# - Claves solo como secretos: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, DATA_REPO,
+#   PRIVATE_REPO_TOKEN y API_FOOTBALL_KEY. Nunca en este archivo ni en los registros.
 #
 # Esta tarea existe igual en las dos copias del código; la única diferencia
 # permitida es el bloque "schedule" (en la copia maestra está apagado).
@@ -93,6 +96,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           F5_DATA: ${{ github.workspace }}/datos/data/fase5
           F5_GIT_DIR: ${{ github.workspace }}/datos
           F5_GIT_CADA: "600"
